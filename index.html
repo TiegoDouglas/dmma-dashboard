@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Assessment — DMMA</title>
+	<style>
+		:root{
+			--accent:#d36fcf; /* purple */
+			--muted:#eceff1;
+			--text:#222;
+			--max-width:1100px;
+		}
+		*{box-sizing:border-box}
+		body{font-family:Inter, 'Segoe UI', Roboto, Arial, sans-serif;color:var(--text);margin:0;padding:0;background:#fff}
+		.container{max-width:var(--max-width);margin:0 auto;padding:20px}
+
+		/* Header */
+		.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid #eee}
+		.brand{display:flex;align-items:center;gap:12px}
+		.brand img{height:34px}
+		.nav{display:flex;gap:18px;align-items:center}
+		.nav a{color:#666;text-decoration:none;padding:8px 10px;border-radius:4px}
+		.nav a.active{color:var(--accent);border-bottom:3px solid var(--accent);}
+
+		/* Layout */
+		.content{display:flex;gap:24px;margin-top:18px}
+		.sidebar{width:180px}
+		.panel{background:#f7f9fa;border-radius:6px;padding:12px;margin-bottom:12px}
+		.panel select{width:100%;padding:8px;border-radius:4px;border:1px solid #dcdcdc;background:white}
+
+		.main{flex:1}
+		.header-title{display:flex;gap:20px;align-items:flex-start}
+		.header-title h1{margin:0;font-size:20px}
+
+		.intro{margin-top:12px;color:#333;line-height:1.5}
+
+		.two-col{display:flex;gap:24px;align-items:flex-start;margin-top:18px}
+		.left-col{flex:1}
+		.right-col{width:300px}
+
+		/* Cards grid */
+		.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px}
+		.tile{border-radius:6px;overflow:hidden;border:1px solid #e6e6e6}
+		.tile .title{background:var(--accent);color:#fff;padding:12px;font-weight:600;text-align:center}
+		.tile .body{background:#e9eef0;padding:12px;color:#333;font-size:13px}
+
+		/* Right column */
+		.logo-box{display:flex;flex-direction:column;align-items:center}
+		.octagon{width:180px;height:180px}
+		.side-text{margin-top:12px;font-size:14px;color:#333}
+
+		footer{margin:32px 0 80px;color:#888;text-align:center}
+
+		@media (max-width:1000px){.grid{grid-template-columns:repeat(2,1fr)}.right-col{width:220px}}
+		@media (max-width:720px){.content{flex-direction:column}.sidebar{width:100%}.two-col{flex-direction:column}.grid{grid-template-columns:1fr}}
+	</style>
+</head>
+<body>
+	<div class="container">
+		<div class="topbar">
+			<div class="brand">
+				<img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='34'><text x='0' y='20' font-family='Arial' font-size='18' fill='%23ff6a00'>avanade</text></svg>" alt="logo">
+				<div style="font-weight:600">Assessment</div>
+			</div>
+			<nav class="nav" aria-label="main">
+				<a href="#">Home</a>
+				<a class="active" href="#">Modelo</a>
+				<a href="#">Clientes</a>
+				<a href="#">Projetos</a>
+			</nav>
+		</div>
+
+		<div class="content">
+			<aside class="sidebar">
+				<div class="panel">
+					<label>Conceito</label>
+					<select>
+						<option>Conceito</option>
+						<option>Outro</option>
+					</select>
+				</div>
+				<div class="panel">
+					<label>Selecione o Pilar</label>
+					<select>
+						<option>Todos</option>
+						<option>Pilar A</option>
+					</select>
+				</div>
+			</aside>
+
+			<main class="main">
+				<div class="header-title">
+					<h1>Conceito</h1>
+				</div>
+				<div class="intro">
+					<p>O Delivery Maturity Model Avanade (DMMA) é uma estrutura de avaliação que mede o nível de maturidade das práticas de entrega de projetos e serviços, permitindo identificar o estágio atual e orientar a evolução para níveis mais avançados.</p>
+				</div>
+
+				<div class="two-col">
+					<div class="left-col">
+						<h3>A maturidade é organizada em cinco níveis progressivos</h3>
+						<div class="grid">
+							<div class="tile"><div class="title">Nível 0 – Inexistente, Inicial</div><div class="body">Ausência de práticas estruturadas, processos informais e baixa previsibilidade.</div></div>
+							<div class="tile"><div class="title">Nível 1 – Adoção Inicial</div><div class="body">Implementação básica de práticas, ainda sem integração ou consistência.</div></div>
+							<div class="tile"><div class="title">Nível 2 – Estrutura Definida</div><div class="body">Modelos e processos padronizados com maior controle e governança.</div></div>
+							<div class="tile"><div class="title">Nível 3 – Cultura de Gestão por Dados</div><div class="body">Decisões orientadas por métricas e indicadores, com foco em eficiência.</div></div>
+							<div class="tile"><div class="title">Nível 4 – Otimizado, Quantitativo</div><div class="body">Processos maduros, previsíveis e otimizados, integração entre áreas.</div></div>
+							<div class="tile"><div class="title">Nível 5 – Adaptativo e Estratégico</div><div class="body">Organização ágil, integrada e orientada ao valor, com rápida capacidade de adaptação.</div></div>
+						</div>
+					</div>
+
+					<aside class="right-col">
+						<div class="logo-box panel">
+							<!-- Octagon SVG inspired by image: placeholder DMMA logo -->
+							<svg class="octagon" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DMMA">
+								<defs>
+									<linearGradient id="g" x1="0" x2="1">
+										<stop offset="0" stop-color="#7b2cbf"/>
+										<stop offset="1" stop-color="#ff7a00"/>
+									</linearGradient>
+								</defs>
+								<polygon points="60,10 140,10 190,60 190,140 140,190 60,190 10,140 10,60" fill="url(#g)" stroke="#fff" stroke-width="6"/>
+								<text x="100" y="120" font-size="30" text-anchor="middle" fill="#fff" font-weight="700">DMMA</text>
+							</svg>
+
+							<p style="margin-top:14px; font-weight:600">Todas as Técnicas Juntas</p>
+						</div>
+
+						<div class="panel side-text">
+							<p>O modelo é sustentado por pilares e temas como Estratégia e Planejamento, Arquitetura e Design, Execução, Governança, Pessoas e Mudança, Tecnologia e Inovação.</p>
+						</div>
+					</aside>
+				</div>
+			</main>
+		</div>
+
+		<footer>&copy; 2026 Avanade — Exemplo de layout</footer>
+	</div>
+
+	<script>
+		// Pequena interatividade: destacar nav selecionada
+		document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click', e=>{
+			e.preventDefault(); document.querySelectorAll('.nav a').forEach(x=>x.classList.remove('active')); a.classList.add('active');
+		}));
+	</script>
+</body>
+</html>

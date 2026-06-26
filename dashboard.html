@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Dashboard — DMMA</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="container">
+      <div class="brand">
+        <img src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='34'><text x='0' y='20' font-family='Arial' font-size='18' fill='%23ff6a00'>avanade</text></svg>" alt="logo">
+        <h1>Delivery Maturity Model Avanade</h1>
+      </div>
+      <div class="meta">6/26/2026 7:17:48 PM</div>
+    </div>
+  </header>
+
+  <main class="container dashboard">
+    <section class="filters">
+      <div class="filter-row">
+        <label>Continente <select><option>All</option></select></label>
+        <label>País <select><option>All</option></select></label>
+        <label>Indústria <select><option>All</option></select></label>
+        <label>Cliente <select><option>All</option></select></label>
+        <label>Pilar <select><option>All</option></select></label>
+        <label>Projetos <select><option>All</option></select></label>
+      </div>
+    </section>
+
+    <section class="panels">
+      <div class="panel gauge">
+        <h3>Maturidade Geral</h3>
+        <canvas id="gaugeChart" width="300" height="150"></canvas>
+        <div class="gauge-value" id="gaugeValue">3.04</div>
+      </div>
+
+      <div class="panel barline">
+        <h3>Evolução de Maturidade Geral Por Mês</h3>
+        <canvas id="barLineChart"></canvas>
+      </div>
+    </section>
+
+    <section class="panels">
+      <div class="panel stats">
+        <h3>Total de Adoção</h3>
+        <div class="stat-grid">
+          <div class="stat"><div class="num">81</div><div class="label">Clientes</div></div>
+          <div class="stat"><div class="num highlight">14</div><div class="label">Adesão ao DMMA</div></div>
+          <div class="stat large"><div class="num percent">17.28%</div><div class="label">Expansão</div></div>
+        </div>
+      </div>
+
+      <div class="panel combo">
+        <h3>Expansão e Adesão ao DMMA</h3>
+        <canvas id="comboChart"></canvas>
+      </div>
+    </section>
+
+    <footer>Dashboard exemplo — dados fictícios para demonstração</footer>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
