@@ -142,7 +142,11 @@
 	<script>
 		// Pequena interatividade: destacar nav selecionada
 		document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click', e=>{
-			e.preventDefault(); document.querySelectorAll('.nav a').forEach(x=>x.classList.remove('active')); a.classList.add('active');
+			if (a.getAttribute('href') === '#') {
+				e.preventDefault();
+				document.querySelectorAll('.nav a').forEach(x=>x.classList.remove('active'));
+				a.classList.add('active');
+			}
 		}));
 	</script>
 </body>
