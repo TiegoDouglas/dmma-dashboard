@@ -1,1 +1,58 @@
-teste
+MeuProjeto/
+│
+├── Controllers/              # Controllers da API (MVC/Web API)
+│   ├── WeatherForecastController.cs
+│   └── ClienteController.cs
+│
+├── Models/                   # Entidades e modelos
+│   ├── Cliente.cs
+│   └── Produto.cs
+│
+├── DTOs/                     # Objetos de transferência
+│   ├── ClienteRequest.cs
+│   └── ClienteResponse.cs
+│
+├── Services/                 # Regras de negócio
+│   ├── IClienteService.cs
+│   └── ClienteService.cs
+│
+├── Repositories/             # Acesso aos dados
+│   ├── IClienteRepository.cs
+│   └── ClienteRepository.cs
+│
+├── Data/                     # Banco de dados
+│   ├── AppDbContext.cs
+│   └── Migrations/
+│
+├── Interfaces/               # Interfaces do projeto
+│
+├── Middlewares/              # Middlewares customizados
+│
+├── Helpers/                  # Classes auxiliares
+│
+├── Extensions/               # Métodos de extensão
+│
+├── Configurations/           # Configurações da aplicação
+│
+├── Properties/
+│   └── launchSettings.json
+│
+├── wwwroot/                  # Arquivos estáticos (opcional)
+│
+├── appsettings.json
+├── appsettings.Development.json
+│
+├── Program.cs                # Inicialização da aplicação
+│
+├── MeuProjeto.csproj         # Projeto .NET
+│
+├── .gitignore
+├── README.md
+│
+├── bin/                      # Gerado automaticamente
+├── obj/                      # Gerado automaticamente
+│
+└── .vscode/
+    ├── launch.json
+    ├── tasks.json
+    └── settings.jsonteste
