@@ -1,8 +1,14 @@
 name: Sincronizar vaga com Azure DevOps
+run-name: sync-azure-${{ inputs.invocation_id || github.run_number }}
 
 on:
   workflow_dispatch:
     inputs:
+      invocation_id:
+        description: Identificador do iniciador Windows
+        required: false
+        default: ""
+        type: string
       dry_run:
         description: Validar a planilha sem atualizar o Azure DevOps
         required: false

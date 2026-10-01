@@ -41,23 +41,30 @@ O workflow **Sincronizar vaga com Azure DevOps**:
 
 ### Execução por duplo clique no Windows
 
-O arquivo `executar_sincronizacao.bat`, na raiz do repositório, dispara o
-workflow na branch `main`, localiza a execução criada e acompanha o resultado
-até o fim. O token do Azure DevOps não é armazenado no arquivo: a execução
-continua usando o secret `ADO_PAT` configurado no GitHub Actions.
+A pasta `automacao_azure_devops` é um pacote autocontido para Windows. O BAT
+publica o `vagas.xlsx` que estiver na mesma pasta diretamente no caminho
+`automacao_azure_devops/vagas.xlsx` da branch `main` e, depois de confirmar a
+publicação, dispara e acompanha o workflow. Se o arquivo local já for idêntico
+ao remoto, nenhum commit desnecessário é criado.
 
-Antes de usar:
+Passo a passo:
 
-1. publique a versão atualizada de `automacao_azure_devops/vagas.xlsx` na branch
-   `main` (por commit/pull request); o workflow usa o arquivo do GitHub, não uma
-   alteração que exista apenas no computador;
-2. instale o [GitHub CLI](https://cli.github.com/);
-3. autentique-se uma vez com `gh auth login` usando uma conta com permissão para
-   executar Actions neste repositório;
-4. dê duplo clique em `executar_sincronizacao.bat`.
+1. baixe o ZIP do repositório pelo GitHub (ou clone o repositório);
+2. copie a pasta inteira `automacao_azure_devops` para o Desktop, sem separar os
+   arquivos `.bat`, `.ps1` e `vagas.xlsx`;
+3. instale o [GitHub CLI](https://cli.github.com/);
+4. abra um terminal uma única vez e execute `gh auth login` com uma conta que
+   possa gravar conteúdo e executar Actions em `TiegoDouglas/dmma-dashboard`;
+5. edite e salve `vagas.xlsx` dentro da pasta copiada no Desktop;
+6. dê duplo clique em `automacao_azure_devops\executar_sincronizacao.bat`.
 
-A janela permanece aberta ao final e informa sucesso ou erro. Em caso de falha,
-o arquivo preserva o código de saída retornado pelo acompanhamento do workflow.
+O iniciador aceita caminhos com espaços e caracteres acentuados, abre a página
+da execução no navegador, acompanha o resultado até o fim e mantém a janela
+aberta com uma mensagem de sucesso ou erro. O BAT da raiz continua disponível
+como atalho quando o repositório completo é usado. Nenhum PAT é salvo
+localmente: o Azure DevOps continua usando somente o secret `ADO_PAT` do GitHub
+Actions, enquanto a publicação da planilha usa a autenticação existente do
+GitHub CLI.
 
 Para executar localmente:
 
