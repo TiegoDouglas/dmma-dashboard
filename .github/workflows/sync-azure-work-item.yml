@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sync-azure-vagas
+  group: sync-azure-work-item
   cancel-in-progress: false
 
 jobs:

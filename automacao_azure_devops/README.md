@@ -39,6 +39,26 @@ O workflow **Sincronizar vaga com Azure DevOps**:
 - permite marcar `dry_run` na execução manual para validar a planilha sem
   acessar ou alterar o Azure DevOps.
 
+### Execução por duplo clique no Windows
+
+O arquivo `executar_sincronizacao.bat`, na raiz do repositório, dispara o
+workflow na branch `main`, localiza a execução criada e acompanha o resultado
+até o fim. O token do Azure DevOps não é armazenado no arquivo: a execução
+continua usando o secret `ADO_PAT` configurado no GitHub Actions.
+
+Antes de usar:
+
+1. publique a versão atualizada de `automacao_azure_devops/vagas.xlsx` na branch
+   `main` (por commit/pull request); o workflow usa o arquivo do GitHub, não uma
+   alteração que exista apenas no computador;
+2. instale o [GitHub CLI](https://cli.github.com/);
+3. autentique-se uma vez com `gh auth login` usando uma conta com permissão para
+   executar Actions neste repositório;
+4. dê duplo clique em `executar_sincronizacao.bat`.
+
+A janela permanece aberta ao final e informa sucesso ou erro. Em caso de falha,
+o arquivo preserva o código de saída retornado pelo acompanhamento do workflow.
+
 Para executar localmente:
 
 ```powershell
