@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,19 @@ DEFAULT_PROJECT = "Esteira de Vagas"
 DEFAULT_WORK_ITEM_ID = 3133
 API_VERSION = "7.1"
 REQUEST_TIMEOUT_SECONDS = 30
+STATE_CATEGORY_ALIASES = {
+    "em andamento": "InProgress",
+    "em progresso": "InProgress",
+    "andamento": "InProgress",
+    "novo": "Proposed",
+    "nova": "Proposed",
+    "new": "Proposed",
+    "concluido": "Completed",
+    "concluida": "Completed",
+    "closed": "Completed",
+    "fechado": "Completed",
+    "fechada": "Completed",
+}
 
 
 class SyncError(RuntimeError):
@@ -32,6 +46,60 @@ class Vacancy:
     description: str
     state: str
     skills: str
+
+
+def _normalized_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.strip())
+    without_accents = "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    )
+    return " ".join(without_accents.casefold().split())
+
+
+def resolve_state_name(requested_state: str, states: list[dict[str, Any]]) -> str:
+    valid_states = [
+        (state["name"].strip(), state.get("category"))
+        for state in states
+        if isinstance(state, dict)
+        and isinstance(state.get("name"), str)
+        and state["name"].strip()
+    ]
+    valid_names = sorted({name for name, _ in valid_states}, key=str.casefold)
+    if not valid_names:
+        raise SyncError("A API do Azure DevOps não retornou estados válidos para o tipo.")
+
+    requested_casefold = requested_state.strip().casefold()
+    exact_matches = sorted(
+        {name for name, _ in valid_states if name.casefold() == requested_casefold},
+        key=str.casefold,
+    )
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+
+    target_category = STATE_CATEGORY_ALIASES.get(_normalized_text(requested_state))
+    category_matches = sorted(
+        {
+            name
+            for name, category in valid_states
+            if target_category
+            and isinstance(category, str)
+            and category.casefold() == target_category.casefold()
+        },
+        key=str.casefold,
+    )
+    if len(category_matches) == 1:
+        return category_matches[0]
+
+    valid_names_text = ", ".join(valid_names)
+    if len(exact_matches) > 1 or len(category_matches) > 1:
+        raise SyncError(
+            f"O estado {requested_state!r} é ambíguo para este tipo de work item. "
+            f"Estados válidos: {valid_names_text}."
+        )
+    raise SyncError(
+        f"O estado {requested_state!r} não é suportado para este tipo de work item. "
+        f"Estados válidos: {valid_names_text}."
+    )
 
 
 def _cell_text(value: Any, field_name: str) -> str:
@@ -186,15 +254,67 @@ class AzureDevOpsClient:
             )
         return unique_matches[0]
 
+    def resolve_work_item_state(self, work_item_id: int, requested_state: str) -> str:
+        try:
+            work_item_response = self.session.get(
+                f"{self.base_url}/workitems/{work_item_id}",
+                params={
+                    "fields": "System.WorkItemType",
+                    "api-version": API_VERSION,
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise SyncError(
+                f"Falha ao consultar o tipo do work item {work_item_id}: {exc}"
+            ) from exc
+
+        work_item = self._response_json(
+            work_item_response, f"consultar o work item {work_item_id}"
+        )
+        fields = work_item.get("fields")
+        work_item_type = (
+            fields.get("System.WorkItemType")
+            if isinstance(fields, dict)
+            else None
+        )
+        if not isinstance(work_item_type, str) or not work_item_type.strip():
+            raise SyncError(
+                f"O work item {work_item_id} não informou System.WorkItemType."
+            )
+
+        try:
+            states_response = self.session.get(
+                f"{self.base_url}/workitemtypes/"
+                f"{quote(work_item_type.strip(), safe='')}/states",
+                params={"api-version": API_VERSION},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise SyncError(
+                f"Falha ao consultar os estados do tipo {work_item_type!r}: {exc}"
+            ) from exc
+
+        states_payload = self._response_json(
+            states_response, f"consultar os estados do tipo {work_item_type!r}"
+        )
+        states = states_payload.get("value")
+        if not isinstance(states, list):
+            raise SyncError(
+                "A resposta de estados do Azure DevOps não contém a lista 'value'."
+            )
+        return resolve_state_name(requested_state, states)
+
     def update_work_item(
         self,
         work_item_id: int,
         vacancy: Vacancy,
         skills_reference_name: str,
+        resolved_state: str,
     ) -> None:
         fields = (
             ("System.Description", vacancy.description),
-            ("System.State", vacancy.state),
+            ("System.State", resolved_state),
             (skills_reference_name, vacancy.skills),
         )
         patch = [
@@ -264,15 +384,19 @@ def main() -> int:
             project=args.project,
             pat=os.getenv("ADO_PAT", ""),
         )
+        resolved_state = client.resolve_work_item_state(
+            args.work_item_id, vacancy.state
+        )
         skills_reference_name = client.resolve_skills_reference_name(skills_override)
         client.update_work_item(
             work_item_id=args.work_item_id,
             vacancy=vacancy,
             skills_reference_name=skills_reference_name,
+            resolved_state=resolved_state,
         )
         print(
             f"Work item {args.work_item_id} atualizado com sucesso "
-            f"(campo Skills: {skills_reference_name})."
+            f"(estado: {resolved_state}; campo Skills: {skills_reference_name})."
         )
         return 0
     except SyncError as exc:

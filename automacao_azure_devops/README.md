@@ -8,6 +8,13 @@ A aba `Planilha1` deve ter exatamente os cabeçalhos `Description`, `state` e
 campos vazios, fórmulas, colunas adicionais preenchidas ou mais de uma linha de
 dados.
 
+Antes da atualização, o script consulta o tipo do work item e os estados
+permitidos para esse tipo. O valor de `state` aceita correspondência exata sem
+diferenciar maiúsculas e minúsculas. Também são reconhecidos aliases por
+categoria, incluindo `Em andamento` para `InProgress`, `Novo`/`New` para
+`Proposed` e `Concluído`/`Closed` para `Completed`. Se não houver uma resolução
+única, a execução falha e lista os nomes válidos retornados pelo Azure DevOps.
+
 ## Configuração no GitHub
 
 Crie o secret de Actions `ADO_PAT` com um Personal Access Token do Azure DevOps
@@ -36,6 +43,7 @@ Para executar localmente:
 
 ```powershell
 python -m pip install -r automacao_azure_devops\requirements.txt
+python -m unittest discover -s automacao_azure_devops -p "test_*.py" -v
 python automacao_azure_devops\sync_vagas.py --dry-run
 ```
 
