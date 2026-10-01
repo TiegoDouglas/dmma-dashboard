@@ -1,0 +1,60 @@
+name: Sincronizar vaga com Azure DevOps
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validar a planilha sem atualizar o Azure DevOps
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-azure-vagas
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Obter o repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: automacao_azure_devops/requirements.txt
+
+      - name: Instalar dependências
+        run: python -m pip install --requirement automacao_azure_devops/requirements.txt
+
+      - name: Validar planilha em dry-run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: >-
+          python automacao_azure_devops/sync_vagas.py
+          --workbook automacao_azure_devops/vagas.xlsx
+          --organization AccountMSFT
+          --project "Esteira de Vagas"
+          --work-item-id 3133
+          --dry-run
+
+      - name: Sincronizar work item
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
+        env:
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+          AZURE_SKILLS_FIELD_REFERENCE_NAME: ${{ vars.AZURE_SKILLS_FIELD_REFERENCE_NAME }}
+        run: >-
+          python automacao_azure_devops/sync_vagas.py
+          --workbook automacao_azure_devops/vagas.xlsx
+          --organization AccountMSFT
+          --project "Esteira de Vagas"
+          --work-item-id 3133
