@@ -229,6 +229,92 @@ class FieldResolutionTests(unittest.TestCase):
         self.assertEqual(resolved.fields["Custom.ProjectName"], "Projeto")
         self.assertEqual(resolved.fields["System.Title"], "Projeto")
 
+    def test_maps_confirmed_position_business_fields(self) -> None:
+        definitions = [
+            FieldDefinition("Role ID", "Custom.RoleID", "integer", False),
+            FieldDefinition(
+                "Status Myscheduling",
+                "Custom.StatusMyscheduling",
+                "string",
+                False,
+            ),
+            FieldDefinition("Client Name", "Custom.ClientName", "string", False),
+            FieldDefinition("Title", "System.Title", "string", False),
+            FieldDefinition("Skills", "Custom.Skills", "string", False),
+            FieldDefinition("Language", "Custom.Language", "string", False),
+            FieldDefinition("Scheduler", "Custom.Scheduler", "string", False),
+            FieldDefinition("Description", "System.Description", "html", False),
+            FieldDefinition(
+                "Work Arrangement", "Custom.WorkArrangement", "string", False
+            ),
+            FieldDefinition(
+                "Primary Contact", "Custom.PrimaryContact", "string", False
+            ),
+            FieldDefinition("Min Level", "Custom.MinLevel", "integer", False),
+            FieldDefinition("Max Level", "Custom.MaxLevel", "integer", False),
+            FieldDefinition("Practice", "Custom.Practice", "string", False),
+            FieldDefinition(
+                "Sub Practice", "Custom.SubPractice", "string", False
+            ),
+            FieldDefinition(
+                "Start Date",
+                "Microsoft.VSTS.Scheduling.StartDate",
+                "dateTime",
+                False,
+            ),
+            FieldDefinition(
+                "Finish Date",
+                "Microsoft.VSTS.Scheduling.FinishDate",
+                "dateTime",
+                False,
+            ),
+            FieldDefinition(
+                "Role Is Overdue", "Custom.RoleIsOverdue", "boolean", False
+            ),
+            FieldDefinition(
+                "Role ID Create Date",
+                "Custom.RoleIDCreateDate",
+                "dateTime",
+                False,
+            ),
+        ]
+        record = ItemRecord(
+            "Position",
+            3,
+            {
+                "Id MyScheduling": 6439485,
+                "Status Myscheduling": "Open",
+                "Cliente": "Client",
+                "RoleTitle": "Developer",
+                "Skillls": "Python",
+                "Idioma": "Português",
+                "Staffing": "Scheduler",
+                "Role Description": "Description",
+                "Modalidade de Trabalho": "Remote",
+                "RolePrimaryContact": "Contact",
+                "level_from": 10,
+                "level_to": 12,
+                "Pr�tica": "Applications",
+                "Sub Pr�tica": "Engineering",
+                "Role Start Date": datetime(2026, 1, 1),
+                "Role End Date": datetime(2026, 12, 31),
+                "Role Is Overdue": False,
+                "DataAberturaScheduling": datetime(2025, 12, 1),
+            },
+        )
+
+        resolved = self.client.resolve_record(record, definitions)
+
+        self.assertEqual(resolved.natural_key_reference_name, "Custom.RoleID")
+        self.assertEqual(resolved.fields["System.Title"], "Developer")
+        self.assertEqual(resolved.fields["Custom.ClientName"], "Client")
+        self.assertEqual(resolved.fields["Custom.Scheduler"], "Scheduler")
+        self.assertEqual(resolved.fields["Custom.Practice"], "Applications")
+        self.assertEqual(
+            resolved.fields["Custom.RoleIDCreateDate"],
+            datetime(2025, 12, 1),
+        )
+
     def test_normalizes_spaces_punctuation_case_and_accents(self) -> None:
         definitions = self.definitions + [
             FieldDefinition("Opp ID", "Custom.OpportunityId", "string", False),
