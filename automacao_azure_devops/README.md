@@ -47,6 +47,16 @@ e `opp-id` são equivalentes. Também é considerado o último segmento de um
 fuzzy matching. Se mais de um campo produzir a mesma forma canônica, a execução
 falha por ambiguidade. As mensagens de erro listam os candidatos próximos e os
 campos graváveis disponíveis, sem exibir valores da planilha ou credenciais.
+Todos os cabeçalhos inválidos de um item são agregados na mesma mensagem para
+evitar ciclos de diagnóstico campo a campo.
+
+Equivalências de negócio comprovadas pelo processo atual são mantidas em um
+mapa explícito no código, incluindo `Project.PROJETO -> System.Title`,
+`Project.Account. -> Custom.Account`,
+`Project.Win Probability -> Custom.WinProb`, as datas estimadas do projeto para
+os campos de agendamento `Start Date`/`Finish Date` e
+`Position.RoleTitle -> System.Title`. Configurações em
+`AZURE_FIELD_REFERENCE_OVERRIDES` sempre têm precedência sobre esse mapa.
 
 Um item existente é atualizado somente quando algum valor mudou. Se não
 existir, ele é criado. `System.Title` é preenchido por `PROJETO` no `Project` e

@@ -127,6 +127,70 @@ class FieldResolutionTests(unittest.TestCase):
         self.assertEqual(resolved.natural_key_reference_name, "Custom.Id")
         self.assertEqual(resolved.fields["System.Title"], "Developer")
 
+    def test_uses_explicit_default_business_mapping(self) -> None:
+        definitions = [
+            FieldDefinition("Opp ID_", "Custom.OppID_", "string", False),
+            FieldDefinition("Account", "Custom.Account", "string", False),
+            FieldDefinition("Title", "System.Title", "string", False),
+            FieldDefinition("Win Prob", "Custom.WinProb", "double", False),
+            FieldDefinition(
+                "Start Date",
+                "Microsoft.VSTS.Scheduling.StartDate",
+                "dateTime",
+                False,
+            ),
+            FieldDefinition(
+                "Finish Date",
+                "Microsoft.VSTS.Scheduling.FinishDate",
+                "dateTime",
+                False,
+            ),
+        ]
+        record = ItemRecord(
+            "Project",
+            3,
+            {
+                "OppID": "A1",
+                "Account.": "Cliente",
+                "PROJETO": "Projeto",
+                "Win Probability": 100,
+                "Estimated Project Start Date": datetime(2026, 4, 1),
+                "Estimated Project End Date": datetime(2027, 3, 2),
+            },
+        )
+
+        resolved = self.client.resolve_record(record, definitions)
+
+        self.assertEqual(resolved.fields["System.Title"], "Projeto")
+        self.assertEqual(resolved.fields["Custom.Account"], "Cliente")
+        self.assertEqual(resolved.fields["Custom.WinProb"], 100)
+        self.assertEqual(
+            resolved.natural_key_reference_name, "Custom.OppID_"
+        )
+
+    def test_environment_override_precedes_default_business_mapping(self) -> None:
+        client = AzureDevOpsClient(
+            "org",
+            "project",
+            "token",
+            {"Project.PROJETO": "Custom.ProjectName"},
+        )
+        definitions = [
+            FieldDefinition("Opp ID_", "Custom.OppID_", "string", False),
+            FieldDefinition("Title", "System.Title", "string", False),
+            FieldDefinition("Project Name", "Custom.ProjectName", "string", False),
+        ]
+        record = ItemRecord(
+            "Project",
+            3,
+            {"OppID": "A1", "PROJETO": "Projeto"},
+        )
+
+        resolved = client.resolve_record(record, definitions)
+
+        self.assertEqual(resolved.fields["Custom.ProjectName"], "Projeto")
+        self.assertEqual(resolved.fields["System.Title"], "Projeto")
+
     def test_normalizes_spaces_punctuation_case_and_accents(self) -> None:
         definitions = self.definitions + [
             FieldDefinition("Opp ID", "Custom.OpportunityId", "string", False),
@@ -220,6 +284,30 @@ class FieldResolutionTests(unittest.TestCase):
         self.assertIn("não foi encontrado", message)
         self.assertIn("Campos graváveis disponíveis", message)
         self.assertIn("RoleTitle (Custom.RoleTitle)", message)
+        self.assertEqual(message.count("Campos graváveis disponíveis"), 1)
+
+    def test_reports_all_unresolved_fields_in_one_error(self) -> None:
+        record = ItemRecord(
+            "Position",
+            3,
+            {
+                "Id MyScheduling": 123,
+                "RoleTitle": "Developer",
+                "Unknown One": "x",
+                "Unknown Two": "y",
+            },
+        )
+        definitions = self.definitions + [
+            FieldDefinition("Title", "System.Title", "string", False)
+        ]
+
+        with self.assertRaises(SyncError) as raised:
+            self.client.resolve_record(record, definitions)
+
+        message = str(raised.exception)
+        self.assertIn("Unknown One", message)
+        self.assertIn("Unknown Two", message)
+        self.assertIn("Falha ao validar os campos de Position", message)
 
     def test_uses_explicit_reference_override(self) -> None:
         client = AzureDevOpsClient(
@@ -306,6 +394,45 @@ class UtilityTests(unittest.TestCase):
 
 
 class SynchronizeTests(unittest.TestCase):
+    def test_aggregates_project_and_position_errors_before_searches(self) -> None:
+        project = ItemRecord(
+            "Project", 3, {"OppID": "A1", "PROJETO": "Projeto"}
+        )
+        position = ItemRecord(
+            "Position", 3, {"Id MyScheduling": 10, "RoleTitle": "Developer"}
+        )
+        plan = WorkbookPlan((RecordPair(project, position),))
+        events: list[str] = []
+
+        class InvalidClient:
+            def get_field_definitions(self, item_type):
+                return []
+
+            def resolve_record(self, record, definitions):
+                events.append(f"resolve:{record.item_type}")
+                raise SyncError(f"erro de {record.item_type}")
+
+            def find_existing(self, record):
+                events.append("unexpected-search")
+
+            def create_work_item(self, record):
+                events.append("unexpected-create")
+
+            def update_work_item(self, existing, record):
+                events.append("unexpected-update")
+
+            def ensure_parent_relation(self, child_id, parent_id, relations):
+                events.append("unexpected-relation")
+
+        with self.assertRaises(SyncError) as raised:
+            synchronize(InvalidClient(), plan)
+
+        message = str(raised.exception)
+        self.assertIn("erro de Project", message)
+        self.assertIn("erro de Position", message)
+        self.assertIn("nenhuma busca ou escrita", message)
+        self.assertEqual(events, ["resolve:Project", "resolve:Position"])
+
     def test_completes_all_lookups_before_writes_and_links_items(self) -> None:
         project = ItemRecord(
             "Project", 3, {"OppID": "A1", "PROJETO": "Projeto"}
