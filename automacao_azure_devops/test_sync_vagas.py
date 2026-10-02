@@ -93,6 +93,44 @@ class WorkbookPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(SyncError, "valores conflitantes"):
             read_workbook_plan(path)
 
+    def test_supports_distinct_projects_and_positions(self) -> None:
+        plan = read_workbook_plan(
+            self.workbook(
+                [
+                    [1, "Dev 1", "A0001", "Projeto A", None],
+                    [2, "Dev 2", "A0002", "Projeto B", None],
+                ]
+            )
+        )
+
+        self.assertEqual(len(plan.projects), 2)
+        self.assertEqual(len(plan.positions), 2)
+        self.assertEqual(len(plan.pairs), 2)
+
+    def test_rejects_same_position_linked_to_different_projects(self) -> None:
+        path = self.workbook(
+            [
+                [1, "Dev", "A0001", "Projeto A", None],
+                [1, "Dev", "A0002", "Projeto B", None],
+            ]
+        )
+
+        with self.assertRaisesRegex(
+            SyncError, "mesma Position.*Projects diferentes"
+        ):
+            read_workbook_plan(path)
+
+    def test_rejects_conflicting_duplicate_position(self) -> None:
+        path = self.workbook(
+            [
+                [1, "Dev A", "A0001", "Projeto", None],
+                [1, "Dev B", "A0001", "Projeto", None],
+            ]
+        )
+
+        with self.assertRaisesRegex(SyncError, "valores conflitantes.*Position"):
+            read_workbook_plan(path)
+
     def test_rejects_formula(self) -> None:
         path = self.workbook([[1, "=1+1", "A0001", "Projeto", None]])
 
@@ -394,6 +432,222 @@ class UtilityTests(unittest.TestCase):
 
 
 class SynchronizeTests(unittest.TestCase):
+    @staticmethod
+    def definitions():
+        return [
+            FieldDefinition("Opp ID_", "Custom.OppID_", "string", False),
+            FieldDefinition("Title", "System.Title", "string", False),
+            FieldDefinition(
+                "Id MyScheduling", "Custom.SchedulingId", "integer", False
+            ),
+        ]
+
+    @staticmethod
+    def multi_line_plan():
+        project = ItemRecord("Project", 3, {"OppID": "A1", "PROJETO": "Projeto"})
+        position_one = ItemRecord(
+            "Position", 3, {"Id MyScheduling": 10, "RoleTitle": "Developer 1"}
+        )
+        position_two = ItemRecord(
+            "Position", 4, {"Id MyScheduling": 20, "RoleTitle": "Developer 2"}
+        )
+        return WorkbookPlan(
+            (
+                RecordPair(project, position_one),
+                RecordPair(project, position_two),
+            )
+        )
+
+    def test_reuses_one_project_for_multiple_positions(self) -> None:
+        plan = self.multi_line_plan()
+        events: list[str] = []
+        next_ids = iter((100, 200, 201))
+
+        class CreatingClient:
+            def get_field_definitions(self, item_type):
+                return SynchronizeTests.definitions()
+
+            def resolve_record(self, record, definitions):
+                return AzureDevOpsClient(
+                    "org", "project", "token"
+                ).resolve_record(record, definitions)
+
+            def find_existing(self, record):
+                events.append(f"find:{record.source.item_type}")
+                return None
+
+            def create_work_item(self, record):
+                work_item_id = next(next_ids)
+                events.append(f"create:{record.source.item_type}:{work_item_id}")
+                return work_item_id
+
+            def update_work_item(self, existing, record):
+                events.append("unexpected-update")
+                return True
+
+            def ensure_parent_relation(self, child_id, parent_id, relations):
+                events.append(f"relation:{parent_id}->{child_id}")
+                return True
+
+        synchronize(CreatingClient(), plan)
+
+        self.assertEqual(events.count("create:Project:100"), 1)
+        self.assertEqual(
+            [event for event in events if event.startswith("create:Position")],
+            ["create:Position:200", "create:Position:201"],
+        )
+        self.assertIn("relation:100->200", events)
+        self.assertIn("relation:100->201", events)
+
+    def test_creates_distinct_projects_for_distinct_opportunity_ids(self) -> None:
+        project_one = ItemRecord(
+            "Project", 3, {"OppID": "A1", "PROJETO": "Projeto 1"}
+        )
+        project_two = ItemRecord(
+            "Project", 4, {"OppID": "A2", "PROJETO": "Projeto 2"}
+        )
+        position_one = ItemRecord(
+            "Position", 3, {"Id MyScheduling": 10, "RoleTitle": "Developer 1"}
+        )
+        position_two = ItemRecord(
+            "Position", 4, {"Id MyScheduling": 20, "RoleTitle": "Developer 2"}
+        )
+        plan = WorkbookPlan(
+            (
+                RecordPair(project_one, position_one),
+                RecordPair(project_two, position_two),
+            )
+        )
+        next_ids = iter((100, 101, 200, 201))
+        events: list[str] = []
+
+        class CreatingClient:
+            def get_field_definitions(self, item_type):
+                return SynchronizeTests.definitions()
+
+            def resolve_record(self, record, definitions):
+                return AzureDevOpsClient(
+                    "org", "project", "token"
+                ).resolve_record(record, definitions)
+
+            def find_existing(self, record):
+                return None
+
+            def create_work_item(self, record):
+                work_item_id = next(next_ids)
+                events.append(f"create:{record.source.item_type}:{work_item_id}")
+                return work_item_id
+
+            def update_work_item(self, existing, record):
+                return False
+
+            def ensure_parent_relation(self, child_id, parent_id, relations):
+                events.append(f"relation:{parent_id}->{child_id}")
+                return True
+
+        synchronize(CreatingClient(), plan)
+
+        self.assertIn("create:Project:100", events)
+        self.assertIn("create:Project:101", events)
+        self.assertIn("relation:100->200", events)
+        self.assertIn("relation:101->201", events)
+
+    def test_duplicate_identical_rows_create_relation_once(self) -> None:
+        pair = self.multi_line_plan().pairs[0]
+        plan = WorkbookPlan((pair, pair))
+        relation_events: list[tuple[int, int]] = []
+        next_ids = iter((100, 200))
+
+        class CreatingClient:
+            def get_field_definitions(self, item_type):
+                return SynchronizeTests.definitions()
+
+            def resolve_record(self, record, definitions):
+                return AzureDevOpsClient(
+                    "org", "project", "token"
+                ).resolve_record(record, definitions)
+
+            def find_existing(self, record):
+                return None
+
+            def create_work_item(self, record):
+                return next(next_ids)
+
+            def update_work_item(self, existing, record):
+                return False
+
+            def ensure_parent_relation(self, child_id, parent_id, relations):
+                relation_events.append((parent_id, child_id))
+                return True
+
+        synchronize(CreatingClient(), plan)
+
+        self.assertEqual(relation_events, [(100, 200)])
+
+    def test_reexecution_is_idempotent_for_items_and_relations(self) -> None:
+        plan = self.multi_line_plan()
+        events: list[str] = []
+        ids = {
+            ("Project", "A1"): 100,
+            ("Position", "10"): 200,
+            ("Position", "20"): 201,
+        }
+
+        class ExistingClient:
+            def get_field_definitions(self, item_type):
+                return SynchronizeTests.definitions()
+
+            def resolve_record(self, record, definitions):
+                return AzureDevOpsClient(
+                    "org", "project", "token"
+                ).resolve_record(record, definitions)
+
+            def find_existing(self, record):
+                work_item_id = ids[
+                    (record.source.item_type, str(record.source.natural_key_value))
+                ]
+                fields = {
+                    reference: value
+                    for reference, value in record.fields.items()
+                }
+                relations = ()
+                if record.source.item_type == "Position":
+                    relations = (
+                        {
+                            "rel": PARENT_RELATION_TYPE,
+                            "url": (
+                                "https://dev.azure.com/org/project/_apis/wit/"
+                                "workItems/100"
+                            ),
+                        },
+                    )
+                return ExistingWorkItem(work_item_id, fields, relations)
+
+            def update_work_item(self, existing, record):
+                events.append(f"update-check:{existing.work_item_id}")
+                return False
+
+            def create_work_item(self, record):
+                events.append("unexpected-create")
+                return 999
+
+            def ensure_parent_relation(self, child_id, parent_id, relations):
+                changed = AzureDevOpsClient(
+                    "org", "project", "token"
+                ).ensure_parent_relation(child_id, parent_id, relations)
+                events.append(f"relation-check:{parent_id}->{child_id}:{changed}")
+                return changed
+
+        synchronize(ExistingClient(), plan)
+
+        self.assertNotIn("unexpected-create", events)
+        self.assertEqual(
+            [event for event in events if event.startswith("update-check")],
+            ["update-check:100", "update-check:200", "update-check:201"],
+        )
+        self.assertIn("relation-check:100->200:False", events)
+        self.assertIn("relation-check:100->201:False", events)
+
     def test_aggregates_project_and_position_errors_before_searches(self) -> None:
         project = ItemRecord(
             "Project", 3, {"OppID": "A1", "PROJETO": "Projeto"}

@@ -28,6 +28,12 @@ Mais de uma `Position` pode compartilhar o mesmo `Project`. Quando uma chave se
 repete, os demais valores do item também precisam ser idênticos; divergências
 falham antes de qualquer chamada de escrita.
 
+Cada linha de dados é processada. O `Project` é reutilizado entre todas as linhas
+com o mesmo `OppID`, enquanto cada `Position` é identificada por
+`Id MyScheduling`. Linhas idênticas não duplicam itens nem relações. A mesma
+`Position` não pode apontar para `OppID`s diferentes; esse conflito também é
+rejeitado no preflight antes de qualquer acesso de escrita.
+
 ## Identidade, criação e relações
 
 A sincronização não usa mais o work item fixo `3133`.

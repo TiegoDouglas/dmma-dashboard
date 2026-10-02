@@ -238,6 +238,7 @@ def read_workbook_plan(workbook_path: Path) -> WorkbookPlan:
         plan = WorkbookPlan(tuple(pairs))
         plan.projects
         plan.positions
+        _validate_pair_relations(plan)
         return plan
     finally:
         workbook.close()
@@ -247,6 +248,25 @@ def _header_text(value: Any, row: int, column: int) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SyncError(f"Cabeçalho vazio ou inválido na linha {row}, coluna {column}.")
     return value.strip()
+
+
+def _validate_pair_relations(plan: WorkbookPlan) -> None:
+    project_by_position: dict[tuple[str, str], tuple[str, str]] = {}
+    source_row_by_position: dict[tuple[str, str], int] = {}
+    for pair in plan.pairs:
+        position_key = _record_key(pair.position)
+        project_key = _record_key(pair.project)
+        previous_project = project_by_position.get(position_key)
+        if previous_project is not None and previous_project != project_key:
+            raise SyncError(
+                f"As linhas {source_row_by_position[position_key]} e "
+                f"{pair.position.source_row} associam a mesma Position "
+                f"{pair.position.natural_key_name}="
+                f"{pair.position.natural_key_value!r} a Projects diferentes "
+                f"({previous_project[1]!r} e {project_key[1]!r})."
+            )
+        project_by_position[position_key] = project_key
+        source_row_by_position[position_key] = pair.position.source_row
 
 
 def _display_value(value: CellValue) -> str:
