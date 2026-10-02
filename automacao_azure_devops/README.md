@@ -40,6 +40,14 @@ Antes de escrever, o script:
 4. localiza `Project` por `OppID` e `Position` por `Id MyScheduling`;
 5. falha se houver mais de um item com a mesma chave.
 
+A resolução de campos usa comparação canônica exata: ignora caixa, espaços,
+hífens, underscores, pontuação e acentos. Assim, por exemplo, `OppID`, `Opp ID`
+e `opp-id` são equivalentes. Também é considerado o último segmento de um
+`referenceName`, permitindo relacionar uma coluna a `Custom.OppID`. Não há
+fuzzy matching. Se mais de um campo produzir a mesma forma canônica, a execução
+falha por ambiguidade. As mensagens de erro listam os candidatos próximos e os
+campos graváveis disponíveis, sem exibir valores da planilha ou credenciais.
+
 Um item existente é atualizado somente quando algum valor mudou. Se não
 existir, ele é criado. `System.Title` é preenchido por `PROJETO` no `Project` e
 por `RoleTitle` na `Position` quando nenhuma coluna já resolver para esse campo.

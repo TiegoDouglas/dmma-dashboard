@@ -127,6 +127,84 @@ class FieldResolutionTests(unittest.TestCase):
         self.assertEqual(resolved.natural_key_reference_name, "Custom.Id")
         self.assertEqual(resolved.fields["System.Title"], "Developer")
 
+    def test_normalizes_spaces_punctuation_case_and_accents(self) -> None:
+        definitions = self.definitions + [
+            FieldDefinition("Opp ID", "Custom.OpportunityId", "string", False),
+            FieldDefinition("Prática", "Custom.Practice", "string", False),
+        ]
+        project = ItemRecord(
+            "Project",
+            3,
+            {"OppID": "A1", "PROJETO": "Projeto"},
+        )
+        project_definitions = definitions + [
+            FieldDefinition("PROJETO", "Custom.Project", "string", False),
+        ]
+        position = ItemRecord(
+            "Position",
+            3,
+            {
+                "Id MyScheduling": 123,
+                "RoleTitle": "Developer",
+                "PRATICA": "Applications",
+            },
+        )
+
+        resolved_project = self.client.resolve_record(project, project_definitions)
+        resolved_position = self.client.resolve_record(position, definitions)
+
+        self.assertEqual(
+            resolved_project.natural_key_reference_name, "Custom.OpportunityId"
+        )
+        self.assertEqual(
+            resolved_position.fields["Custom.Practice"], "Applications"
+        )
+
+    def test_matches_reference_name_leaf_after_canonical_normalization(self) -> None:
+        definitions = self.definitions + [
+            FieldDefinition(
+                "Competências da vaga", "Custom.Role-Skills", "string", False
+            )
+        ]
+        record = ItemRecord(
+            "Position",
+            3,
+            {
+                "Id MyScheduling": 123,
+                "RoleTitle": "Developer",
+                "role_skills": "Python",
+            },
+        )
+
+        resolved = self.client.resolve_record(record, definitions)
+
+        self.assertEqual(resolved.fields["Custom.Role-Skills"], "Python")
+
+    def test_rejects_canonical_ambiguity_and_lists_diagnostics(self) -> None:
+        definitions = self.definitions + [
+            FieldDefinition("Opp ID", "Custom.OppIdOne", "string", False),
+            FieldDefinition("Opp-ID", "Custom.OppIdTwo", "string", False),
+            FieldDefinition("Somente leitura", "Custom.ReadOnly", "string", True),
+        ]
+        project = ItemRecord(
+            "Project",
+            3,
+            {"OppID": "A1", "PROJETO": "Projeto"},
+        )
+        definitions.append(
+            FieldDefinition("PROJETO", "Custom.Project", "string", False)
+        )
+
+        with self.assertRaises(SyncError) as raised:
+            self.client.resolve_record(project, definitions)
+
+        message = str(raised.exception)
+        self.assertIn("ambíguo após normalização canônica", message)
+        self.assertIn("Opp ID (Custom.OppIdOne)", message)
+        self.assertIn("Opp-ID (Custom.OppIdTwo)", message)
+        self.assertIn("Campos graváveis disponíveis", message)
+        self.assertNotIn("Custom.ReadOnly", message)
+
     def test_rejects_unknown_field(self) -> None:
         record = ItemRecord(
             "Position",
@@ -134,8 +212,14 @@ class FieldResolutionTests(unittest.TestCase):
             {"Id MyScheduling": 123, "RoleTitle": "Developer", "Unknown": "x"},
         )
 
-        with self.assertRaisesRegex(SyncError, "Unknown.*não foi encontrado"):
+        with self.assertRaises(SyncError) as raised:
             self.client.resolve_record(record, self.definitions)
+
+        message = str(raised.exception)
+        self.assertIn("Unknown", message)
+        self.assertIn("não foi encontrado", message)
+        self.assertIn("Campos graváveis disponíveis", message)
+        self.assertIn("RoleTitle (Custom.RoleTitle)", message)
 
     def test_uses_explicit_reference_override(self) -> None:
         client = AzureDevOpsClient(

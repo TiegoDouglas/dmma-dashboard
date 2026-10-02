@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -405,26 +406,38 @@ class AzureDevOpsClient:
         override_key = f"{item_type}.{display_name}"
         override = self.field_overrides.get(override_key)
         if override:
+            override_canonical = _canonical_field_name(override)
             matches = [
                 definition
                 for definition in definitions
                 if definition.reference_name.casefold() == override.casefold()
+                or _canonical_field_name(definition.reference_name)
+                == override_canonical
             ]
         else:
+            display_canonical = _canonical_field_name(display_name)
             matches = [
                 definition
                 for definition in definitions
-                if definition.name.casefold() == display_name.casefold()
-                or definition.reference_name.casefold() == display_name.casefold()
+                if display_canonical in _field_aliases(definition)
             ]
         unique = {definition.reference_name: definition for definition in matches}
         if len(unique) != 1:
-            if not unique:
-                detail = "não foi encontrado"
-            else:
-                detail = "é ambíguo: " + ", ".join(sorted(unique))
+            candidates = (
+                list(unique.values())
+                if unique
+                else _nearby_field_candidates(display_name, definitions)
+            )
+            detail = (
+                "não foi encontrado"
+                if not unique
+                else "é ambíguo após normalização canônica"
+            )
             raise SyncError(
                 f"O campo {display_name!r} de {item_type} {detail}. "
+                f"Candidatos próximos: {_format_field_definitions(candidates)}. "
+                "Campos graváveis disponíveis: "
+                f"{_format_field_definitions(_writable_fields(definitions))}. "
                 "Corrija o processo no Azure DevOps ou configure "
                 "AZURE_FIELD_REFERENCE_OVERRIDES."
             )
@@ -641,6 +654,59 @@ def _field_patch(fields: dict[str, CellValue]) -> list[dict[str, Any]]:
 
 def _escape_json_pointer(value: str) -> str:
     return value.replace("~", "~0").replace("/", "~1")
+
+
+def _canonical_field_name(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value)
+    return "".join(
+        character.casefold()
+        for character in decomposed
+        if character.isalnum()
+    )
+
+
+def _field_aliases(definition: FieldDefinition) -> set[str]:
+    reference_leaf = definition.reference_name.rsplit(".", 1)[-1]
+    return {
+        _canonical_field_name(definition.name),
+        _canonical_field_name(definition.reference_name),
+        _canonical_field_name(reference_leaf),
+    }
+
+
+def _nearby_field_candidates(
+    requested_name: str, definitions: list[FieldDefinition]
+) -> list[FieldDefinition]:
+    requested = _canonical_field_name(requested_name)
+    if not requested:
+        return []
+    return [
+        definition
+        for definition in definitions
+        if any(
+            requested in alias or alias in requested
+            for alias in _field_aliases(definition)
+            if alias
+        )
+    ]
+
+
+def _writable_fields(
+    definitions: list[FieldDefinition],
+) -> list[FieldDefinition]:
+    return [definition for definition in definitions if not definition.read_only]
+
+
+def _format_field_definitions(definitions: list[FieldDefinition]) -> str:
+    if not definitions:
+        return "nenhum"
+    return "; ".join(
+        f"{definition.name} ({definition.reference_name})"
+        for definition in sorted(
+            definitions,
+            key=lambda item: (item.name.casefold(), item.reference_name.casefold()),
+        )
+    )
 
 
 def _wiql_escape(value: str) -> str:
