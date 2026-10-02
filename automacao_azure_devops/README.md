@@ -64,6 +64,13 @@ os campos de agendamento `Start Date`/`Finish Date` e
 `Position.RoleTitle -> System.Title`. Configurações em
 `AZURE_FIELD_REFERENCE_OVERRIDES` sempre têm precedência sobre esse mapa.
 
+Para `Position`, o catálogo do processo também comprova os mapeamentos de
+`Id MyScheduling` para `Role ID`, `DataAberturaScheduling` para
+`Role ID Create Date`, status, cliente, skills, idioma, descrição, modalidade,
+contato primário, níveis mínimo/máximo, prática/subprática, datas de início/fim
+e indicador de atraso. `Staffing` é enviado ao campo de negócio específico
+`Scheduler`; não é usado para alterar `Assigned To` nem `Recruiter`.
+
 Um item existente é atualizado somente quando algum valor mudou. Se não
 existir, ele é criado. `System.Title` é preenchido por `PROJETO` no `Project` e
 por `RoleTitle` na `Position` quando nenhuma coluna já resolver para esse campo.
