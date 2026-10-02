@@ -1,4 +1,4 @@
-name: Sincronizar vaga com Azure DevOps
+name: Sincronizar vagas com Azure DevOps
 run-name: sync-azure-${{ inputs.invocation_id || github.run_number }}
 
 on:
@@ -43,6 +43,13 @@ jobs:
       - name: Instalar dependências
         run: python -m pip install --requirement automacao_azure_devops/requirements.txt
 
+      - name: Executar testes unitários
+        run: >-
+          python -m unittest discover
+          -s automacao_azure_devops
+          -p "test_*.py"
+          -v
+
       - name: Validar planilha em dry-run
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: >-
@@ -50,17 +57,15 @@ jobs:
           --workbook automacao_azure_devops/vagas.xlsx
           --organization AccountMSFT
           --project "Esteira de Vagas"
-          --work-item-id 3133
           --dry-run
 
       - name: Sincronizar work item
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         env:
           ADO_PAT: ${{ secrets.ADO_PAT }}
-          AZURE_SKILLS_FIELD_REFERENCE_NAME: ${{ vars.AZURE_SKILLS_FIELD_REFERENCE_NAME }}
+          AZURE_FIELD_REFERENCE_OVERRIDES: ${{ vars.AZURE_FIELD_REFERENCE_OVERRIDES }}
         run: >-
           python automacao_azure_devops/sync_vagas.py
           --workbook automacao_azure_devops/vagas.xlsx
           --organization AccountMSFT
           --project "Esteira de Vagas"
-          --work-item-id 3133

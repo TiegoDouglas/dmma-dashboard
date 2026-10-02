@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions
-title Sincronizacao de vaga com Azure DevOps
+title Sincronizacao de vagas com Azure DevOps
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0executar_sincronizacao.ps1"
 set "EXIT_CODE=%ERRORLEVEL%"
