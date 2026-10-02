@@ -195,7 +195,7 @@ function Start-And-WatchWorkflow {
 $exitCode = 1
 try {
     Write-Host ""
-    Write-Host "Sincronizacao de vaga com Azure DevOps"
+    Write-Host "Sincronizacao de vagas com Azure DevOps"
     Write-Host "Pasta local: $PSScriptRoot"
     Write-Host ""
 
@@ -213,7 +213,7 @@ try {
     $exitCode = Start-And-WatchWorkflow
     Write-Host ""
     if ($exitCode -eq 0) {
-        Write-Host "SUCESSO: planilha publicada e sincronizacao concluida."
+        Write-Host "SUCESSO: planilha publicada e Projects/Positions sincronizados."
     }
     else {
         Write-Host "ERRO: o workflow terminou com falha (codigo $exitCode)."

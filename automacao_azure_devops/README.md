@@ -1,72 +1,104 @@
-# Sincronização de vaga com Azure DevOps
+# Sincronização de vagas com Azure DevOps
 
-Esta automação lê `automacao_azure_devops/vagas.xlsx` e atualiza o work item
-`3133` da organização `AccountMSFT`, projeto `Esteira de Vagas`.
+Esta automação lê `automacao_azure_devops/vagas.xlsx` e sincroniza itens
+relacionados no Azure DevOps da organização `AccountMSFT`, projeto
+`Esteira de Vagas`.
 
-A aba `Planilha1` deve ter exatamente os cabeçalhos `Description`, `state` e
-`Skills`, além de exatamente uma linha preenchida. O script rejeita linhas com
-campos vazios, fórmulas, colunas adicionais preenchidas ou mais de uma linha de
-dados.
+## Layout da planilha
 
-Antes da atualização, o script consulta o tipo do work item e os estados
-permitidos para esse tipo. O valor de `state` aceita correspondência exata sem
-diferenciar maiúsculas e minúsculas. Também são reconhecidos aliases por
-categoria, incluindo `Em andamento` para `InProgress`, `Novo`/`New` para
-`Proposed` e `Concluído`/`Closed` para `Completed`. Se não houver uma resolução
-única, a execução falha e lista os nomes válidos retornados pelo Azure DevOps.
+A aba única `Planilha1` usa duas linhas de cabeçalho:
+
+- linha 1: tipo de work item de cada coluna (`Project` ou `Position`);
+- linha 2: nome de exibição do campo no Azure DevOps;
+- linha 3 em diante: valores. A coluna A contém apenas os rótulos
+  `Tipo de Item`, `Campos` e `valor` e não é enviada ao Azure DevOps.
+
+O arquivo atual possui 30 campos mapeados:
+
+| Tipo | Chave natural | Campos |
+|---|---|---|
+| `Project` | `OppID` | `OppID`, `Account.`, `PROJETO`, `Win Probability`, `Estimated Close Date`, `Status EALA`, `Sales Stage`, `Must Win Deal`, `Forecast category`, `Estimated Project Start Date`, `Estimated Project End Date`, `Channel` |
+| `Position` | `Id MyScheduling` | `Id MyScheduling`, `Status Myscheduling`, `Cliente`, `RoleTitle`, `Skillls`, `Idioma`, `Staffing`, `Role Description`, `Modalidade de Trabalho`, `RolePrimaryContact`, `level_from`, `level_to`, `Prática`, `Sub Prática`, `Role Start Date`, `Role End Date`, `Role Is Overdue`, `DataAberturaScheduling` |
+
+Datas, números, booleanos e textos são preservados de acordo com o tipo da
+célula. Fórmulas não são aceitas. Linhas vazias são ignoradas. Cada linha deve
+informar as duas chaves naturais.
+
+Mais de uma `Position` pode compartilhar o mesmo `Project`. Quando uma chave se
+repete, os demais valores do item também precisam ser idênticos; divergências
+falham antes de qualquer chamada de escrita.
+
+## Identidade, criação e relações
+
+A sincronização não usa mais o work item fixo `3133`.
+
+Antes de escrever, o script:
+
+1. consulta os campos válidos de cada tipo pela API;
+2. resolve cada nome da linha 2 para um único `referenceName`;
+3. rejeita campos ausentes, ambíguos ou somente leitura;
+4. localiza `Project` por `OppID` e `Position` por `Id MyScheduling`;
+5. falha se houver mais de um item com a mesma chave.
+
+Um item existente é atualizado somente quando algum valor mudou. Se não
+existir, ele é criado. `System.Title` é preenchido por `PROJETO` no `Project` e
+por `RoleTitle` na `Position` quando nenhuma coluna já resolver para esse campo.
+
+Cada `Position` recebe o `Project` da mesma linha como pai pela relação
+`System.LinkTypes.Hierarchy-Reverse`. A relação é criada somente quando ainda
+não existe. A automação recusa trocar silenciosamente uma `Position` que já
+tenha outro pai.
+
+Se um nome de exibição não for único no processo do Azure DevOps, configure a
+variável de repositório ou ambiente `AZURE_FIELD_REFERENCE_OVERRIDES` com um
+objeto JSON. As chaves seguem o formato `Tipo.Nome da coluna`:
+
+```json
+{
+  "Position.Skillls": "Custom.Skills",
+  "Project.Account.": "Custom.Account"
+}
+```
 
 ## Configuração no GitHub
 
-Crie o secret de Actions `ADO_PAT` com um Personal Access Token do Azure DevOps
-que tenha somente a permissão necessária **Work Items: Read & write**. O PAT é
-lido exclusivamente pela variável de ambiente no workflow, não deve ser
-incluído na planilha, no código, nos logs ou em variáveis comuns do repositório.
-Se o secret estiver ausente, a execução falhará explicitamente.
-
-Por padrão, o script consulta a API de campos do projeto para descobrir o
-`referenceName` do campo exibido como `Skills`. Se houver campos ambíguos ou a
-consulta não retornar esse nome, configure a variável de repositório ou ambiente
-`AZURE_SKILLS_FIELD_REFERENCE_NAME` com o `referenceName` correto, por exemplo
-`Custom.Skills`.
-
-## Execução
+Crie o secret de Actions `ADO_PAT` com um Personal Access Token que tenha apenas
+`Work Items: Read & write`. O token é lido exclusivamente pelo workflow e nunca
+deve ser incluído na planilha, no código, nos logs ou em variáveis comuns.
 
 O workflow **Sincronizar vaga com Azure DevOps**:
 
 - executa automaticamente no início de cada hora;
 - pode ser iniciado em **Actions > Sincronizar vaga com Azure DevOps > Run
   workflow**;
-- permite marcar `dry_run` na execução manual para validar a planilha sem
-  acessar ou alterar o Azure DevOps.
+- oferece `dry_run`, que valida e mostra os itens/relações planejados sem exigir
+  `ADO_PAT` e sem fazer qualquer chamada ao Azure DevOps.
 
-### Execução por duplo clique no Windows
+Na execução real, todas as descobertas e buscas são concluídas antes da primeira
+criação ou atualização. Assim, um erro de campo ou uma chave duplicada não deixa
+uma sincronização parcialmente iniciada.
 
-A pasta `automacao_azure_devops` é um pacote autocontido para Windows. O BAT
-publica o `vagas.xlsx` que estiver na mesma pasta diretamente no caminho
-`automacao_azure_devops/vagas.xlsx` da branch `main` e, depois de confirmar a
-publicação, dispara e acompanha o workflow. Se o arquivo local já for idêntico
-ao remoto, nenhum commit desnecessário é criado.
+## Execução por duplo clique no Windows
 
-Passo a passo:
+A pasta `automacao_azure_devops` continua sendo um pacote portátil. O BAT
+publica o `vagas.xlsx` que estiver na mesma pasta em
+`automacao_azure_devops/vagas.xlsx` da branch `main` e dispara o workflow. Se o
+arquivo local já for idêntico ao remoto, nenhum commit desnecessário é criado.
 
-1. baixe o ZIP do repositório pelo GitHub (ou clone o repositório);
-2. copie a pasta inteira `automacao_azure_devops` para o Desktop, sem separar os
-   arquivos `.bat`, `.ps1` e `vagas.xlsx`;
-3. instale o [GitHub CLI](https://cli.github.com/);
-4. abra um terminal uma única vez e execute `gh auth login` com uma conta que
-   possa gravar conteúdo e executar Actions em `TiegoDouglas/dmma-dashboard`;
-5. edite e salve `vagas.xlsx` dentro da pasta copiada no Desktop;
-6. dê duplo clique em `automacao_azure_devops\executar_sincronizacao.bat`.
+1. Baixe o ZIP do repositório ou clone o projeto.
+2. Copie a pasta inteira `automacao_azure_devops` para o Desktop.
+3. Instale o [GitHub CLI](https://cli.github.com/).
+4. Execute uma vez `gh auth login` com uma conta que possa gravar conteúdo e
+   executar Actions em `TiegoDouglas/dmma-dashboard`.
+5. Edite e salve `vagas.xlsx` ao lado dos arquivos `.bat` e `.ps1`.
+6. Dê duplo clique em `executar_sincronizacao.bat`.
 
-O iniciador aceita caminhos com espaços e caracteres acentuados, abre a página
-da execução no navegador, acompanha o resultado até o fim e mantém a janela
-aberta com uma mensagem de sucesso ou erro. O BAT da raiz continua disponível
-como atalho quando o repositório completo é usado. Nenhum PAT é salvo
-localmente: o Azure DevOps continua usando somente o secret `ADO_PAT` do GitHub
-Actions, enquanto a publicação da planilha usa a autenticação existente do
-GitHub CLI.
+O iniciador aceita caminhos com espaços e caracteres acentuados, abre a
+execução no navegador, acompanha o resultado e mantém a janela aberta com a
+mensagem final. O BAT da raiz continua disponível como atalho. Nenhum PAT do
+Azure DevOps é salvo localmente.
 
-Para executar localmente:
+## Validação local
 
 ```powershell
 python -m pip install -r automacao_azure_devops\requirements.txt
@@ -74,6 +106,5 @@ python -m unittest discover -s automacao_azure_devops -p "test_*.py" -v
 python automacao_azure_devops\sync_vagas.py --dry-run
 ```
 
-O dry-run não exige `ADO_PAT`. A execução real foi projetada para o workflow e
-recebe `ADO_PAT` no GitHub Actions somente por meio do secret descrito acima;
-nunca grave o token em arquivo ou variável comum.
+O dry-run é completamente offline. A execução real requer `ADO_PAT` e foi
+projetada para ocorrer no GitHub Actions.

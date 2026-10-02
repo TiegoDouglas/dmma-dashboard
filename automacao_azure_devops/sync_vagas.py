@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Synchronize the single row in vagas.xlsx with an Azure DevOps work item."""
+"""Synchronize Project and Position work items from vagas.xlsx."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
-import unicodedata
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -16,101 +17,118 @@ import requests
 from openpyxl import load_workbook
 from requests.auth import HTTPBasicAuth
 
-EXPECTED_HEADERS = ("Description", "state", "Skills")
 DEFAULT_ORGANIZATION = "AccountMSFT"
 DEFAULT_PROJECT = "Esteira de Vagas"
-DEFAULT_WORK_ITEM_ID = 3133
 API_VERSION = "7.1"
 REQUEST_TIMEOUT_SECONDS = 30
-STATE_CATEGORY_ALIASES = {
-    "em andamento": "InProgress",
-    "em progresso": "InProgress",
-    "andamento": "InProgress",
-    "novo": "Proposed",
-    "nova": "Proposed",
-    "new": "Proposed",
-    "concluido": "Completed",
-    "concluida": "Completed",
-    "closed": "Completed",
-    "fechado": "Completed",
-    "fechada": "Completed",
+SHEET_NAME = "Planilha1"
+SUPPORTED_ITEM_TYPES = ("Project", "Position")
+NATURAL_KEY_FIELDS = {
+    "Project": "OppID",
+    "Position": "Id MyScheduling",
 }
+TITLE_SOURCE_FIELDS = {
+    "Project": "PROJETO",
+    "Position": "RoleTitle",
+}
+PARENT_ITEM_TYPE = "Project"
+CHILD_ITEM_TYPE = "Position"
+PARENT_RELATION_TYPE = "System.LinkTypes.Hierarchy-Reverse"
 
 
 class SyncError(RuntimeError):
     """Raised when workbook validation or Azure DevOps synchronization fails."""
 
 
+CellValue = str | int | float | bool | date | datetime
+
+
 @dataclass(frozen=True)
-class Vacancy:
-    description: str
-    state: str
-    skills: str
+class ItemRecord:
+    item_type: str
+    source_row: int
+    fields: dict[str, CellValue]
+
+    @property
+    def natural_key_name(self) -> str:
+        return NATURAL_KEY_FIELDS[self.item_type]
+
+    @property
+    def natural_key_value(self) -> CellValue:
+        return self.fields[self.natural_key_name]
 
 
-def _normalized_text(value: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", value.strip())
-    without_accents = "".join(
-        character for character in decomposed if not unicodedata.combining(character)
-    )
-    return " ".join(without_accents.casefold().split())
+@dataclass(frozen=True)
+class RecordPair:
+    project: ItemRecord
+    position: ItemRecord
 
 
-def resolve_state_name(requested_state: str, states: list[dict[str, Any]]) -> str:
-    valid_states = [
-        (state["name"].strip(), state.get("category"))
-        for state in states
-        if isinstance(state, dict)
-        and isinstance(state.get("name"), str)
-        and state["name"].strip()
-    ]
-    valid_names = sorted({name for name, _ in valid_states}, key=str.casefold)
-    if not valid_names:
-        raise SyncError("A API do Azure DevOps não retornou estados válidos para o tipo.")
+@dataclass(frozen=True)
+class WorkbookPlan:
+    pairs: tuple[RecordPair, ...]
 
-    requested_casefold = requested_state.strip().casefold()
-    exact_matches = sorted(
-        {name for name, _ in valid_states if name.casefold() == requested_casefold},
-        key=str.casefold,
-    )
-    if len(exact_matches) == 1:
-        return exact_matches[0]
+    @property
+    def projects(self) -> tuple[ItemRecord, ...]:
+        return _unique_records(pair.project for pair in self.pairs)
 
-    target_category = STATE_CATEGORY_ALIASES.get(_normalized_text(requested_state))
-    category_matches = sorted(
-        {
-            name
-            for name, category in valid_states
-            if target_category
-            and isinstance(category, str)
-            and category.casefold() == target_category.casefold()
-        },
-        key=str.casefold,
-    )
-    if len(category_matches) == 1:
-        return category_matches[0]
-
-    valid_names_text = ", ".join(valid_names)
-    if len(exact_matches) > 1 or len(category_matches) > 1:
-        raise SyncError(
-            f"O estado {requested_state!r} é ambíguo para este tipo de work item. "
-            f"Estados válidos: {valid_names_text}."
-        )
-    raise SyncError(
-        f"O estado {requested_state!r} não é suportado para este tipo de work item. "
-        f"Estados válidos: {valid_names_text}."
-    )
+    @property
+    def positions(self) -> tuple[ItemRecord, ...]:
+        return _unique_records(pair.position for pair in self.pairs)
 
 
-def _cell_text(value: Any, field_name: str) -> str:
+@dataclass(frozen=True)
+class FieldDefinition:
+    name: str
+    reference_name: str
+    field_type: str
+    read_only: bool
+
+
+@dataclass(frozen=True)
+class ResolvedRecord:
+    source: ItemRecord
+    fields: dict[str, CellValue]
+    natural_key_reference_name: str
+
+
+@dataclass(frozen=True)
+class ExistingWorkItem:
+    work_item_id: int
+    fields: dict[str, Any]
+    relations: tuple[dict[str, Any], ...]
+
+
+def _unique_records(records: Any) -> tuple[ItemRecord, ...]:
+    unique: dict[tuple[str, str], ItemRecord] = {}
+    for record in records:
+        key = (record.item_type, str(record.natural_key_value))
+        previous = unique.get(key)
+        if previous is not None and previous.fields != record.fields:
+            raise SyncError(
+                f"As linhas {previous.source_row} e {record.source_row} possuem valores "
+                f"conflitantes para {record.item_type} com "
+                f"{record.natural_key_name}={record.natural_key_value!r}."
+            )
+        unique[key] = record
+    return tuple(unique.values())
+
+
+def _cell_value(value: Any, field_name: str, row_number: int) -> CellValue | None:
     if value is None:
-        return ""
-    if not isinstance(value, (str, int, float, bool)):
-        raise SyncError(f"O campo {field_name!r} possui um tipo de valor não suportado.")
-    return str(value).strip()
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    if isinstance(value, (bool, int, float, datetime, date)):
+        return value
+    raise SyncError(
+        f"O campo {field_name!r} na linha {row_number} possui tipo não suportado: "
+        f"{type(value).__name__}."
+    )
 
 
-def read_vacancy(workbook_path: Path) -> Vacancy:
+def read_workbook_plan(workbook_path: Path) -> WorkbookPlan:
     if not workbook_path.is_file():
         raise SyncError(f"Planilha não encontrada: {workbook_path}")
 
@@ -125,79 +143,156 @@ def read_vacancy(workbook_path: Path) -> Vacancy:
         raise SyncError(f"Não foi possível abrir a planilha XLSX: {exc}") from exc
 
     try:
-        if "Planilha1" not in workbook.sheetnames:
-            raise SyncError("A planilha deve conter a aba 'Planilha1'.")
-
-        worksheet = workbook["Planilha1"]
-        headers = tuple(
-            _cell_text(worksheet.cell(row=1, column=column).value, f"cabeçalho {column}")
-            for column in range(1, 4)
-        )
-        if headers != EXPECTED_HEADERS:
+        if workbook.sheetnames != [SHEET_NAME]:
             raise SyncError(
-                "Cabeçalhos inválidos em Planilha1. "
-                f"Esperado: {EXPECTED_HEADERS}; encontrado: {headers}."
+                f"A planilha deve conter somente a aba {SHEET_NAME!r}; "
+                f"encontrado: {', '.join(workbook.sheetnames)}."
             )
 
-        extra_headers = [
-            worksheet.cell(row=1, column=column).value
-            for column in range(4, worksheet.max_column + 1)
-            if worksheet.cell(row=1, column=column).value not in (None, "")
-        ]
-        if extra_headers:
-            raise SyncError("Planilha1 possui cabeçalhos adicionais não permitidos.")
+        worksheet = workbook[SHEET_NAME]
+        if worksheet.max_column < 3:
+            raise SyncError("Planilha1 não contém colunas suficientes para os dois tipos.")
+        if worksheet.cell(1, 1).value != "Tipo de Item":
+            raise SyncError("A célula A1 deve conter 'Tipo de Item'.")
+        if worksheet.cell(2, 1).value != "Campos":
+            raise SyncError("A célula A2 deve conter 'Campos'.")
 
-        populated_rows: list[tuple[int, tuple[str, str, str]]] = []
-        for row_number in range(2, worksheet.max_row + 1):
-            cells = tuple(worksheet.cell(row=row_number, column=column) for column in range(1, 4))
-            if any(cell.data_type == "f" for cell in cells):
-                raise SyncError(f"Fórmulas não são permitidas na linha {row_number}.")
-
-            values = tuple(
-                _cell_text(cell.value, EXPECTED_HEADERS[index])
-                for index, cell in enumerate(cells)
-            )
-            extra_values = [
-                worksheet.cell(row=row_number, column=column).value
-                for column in range(4, worksheet.max_column + 1)
-                if worksheet.cell(row=row_number, column=column).value not in (None, "")
-            ]
-            if extra_values:
+        columns: list[tuple[int, str, str]] = []
+        seen_fields: set[tuple[str, str]] = set()
+        for column in range(2, worksheet.max_column + 1):
+            item_type = _header_text(worksheet.cell(1, column).value, 1, column)
+            field_name = _header_text(worksheet.cell(2, column).value, 2, column)
+            if item_type not in SUPPORTED_ITEM_TYPES:
                 raise SyncError(
-                    f"A linha {row_number} possui valores fora das três colunas esperadas."
+                    f"Tipo de item não suportado na coluna {column}: {item_type!r}. "
+                    f"Tipos aceitos: {', '.join(SUPPORTED_ITEM_TYPES)}."
                 )
-            if any(values):
-                populated_rows.append((row_number, values))
+            field_key = (item_type, field_name.casefold())
+            if field_key in seen_fields:
+                raise SyncError(
+                    f"O campo {field_name!r} está duplicado para {item_type}."
+                )
+            seen_fields.add(field_key)
+            columns.append((column, item_type, field_name))
 
-        if len(populated_rows) != 1:
-            raise SyncError(
-                "Planilha1 deve conter exatamente uma linha de dados preenchida; "
-                f"foram encontradas {len(populated_rows)}."
+        for item_type, key_field in NATURAL_KEY_FIELDS.items():
+            if (item_type, key_field.casefold()) not in seen_fields:
+                raise SyncError(
+                    f"O tipo {item_type} deve declarar a chave natural {key_field!r}."
+                )
+
+        pairs: list[RecordPair] = []
+        for row_number in range(3, worksheet.max_row + 1):
+            mapped_cells = [
+                worksheet.cell(row_number, column) for column, _, _ in columns
+            ]
+            if not any(cell.value not in (None, "") for cell in mapped_cells):
+                continue
+            formula_cells = [cell.coordinate for cell in mapped_cells if cell.data_type == "f"]
+            if formula_cells:
+                raise SyncError(
+                    f"Fórmulas não são permitidas nas células: {', '.join(formula_cells)}."
+                )
+
+            grouped: dict[str, dict[str, CellValue]] = {
+                item_type: {} for item_type in SUPPORTED_ITEM_TYPES
+            }
+            for cell, (_, item_type, field_name) in zip(mapped_cells, columns):
+                value = _cell_value(cell.value, field_name, row_number)
+                if value is not None:
+                    grouped[item_type][field_name] = value
+
+            records: dict[str, ItemRecord] = {}
+            for item_type in SUPPORTED_ITEM_TYPES:
+                key_field = NATURAL_KEY_FIELDS[item_type]
+                if key_field not in grouped[item_type]:
+                    raise SyncError(
+                        f"A linha {row_number} não informou a chave obrigatória "
+                        f"{key_field!r} de {item_type}."
+                    )
+                records[item_type] = ItemRecord(
+                    item_type=item_type,
+                    source_row=row_number,
+                    fields=grouped[item_type],
+                )
+            pairs.append(
+                RecordPair(
+                    project=records[PARENT_ITEM_TYPE],
+                    position=records[CHILD_ITEM_TYPE],
+                )
             )
 
-        row_number, values = populated_rows[0]
-        missing_fields = [
-            EXPECTED_HEADERS[index] for index, value in enumerate(values) if not value
-        ]
-        if missing_fields:
-            raise SyncError(
-                f"A linha {row_number} possui campos obrigatórios vazios: "
-                + ", ".join(missing_fields)
-            )
+        if not pairs:
+            raise SyncError("Planilha1 não contém nenhuma linha de dados preenchida.")
 
-        return Vacancy(description=values[0], state=values[1], skills=values[2])
+        plan = WorkbookPlan(tuple(pairs))
+        plan.projects
+        plan.positions
+        return plan
     finally:
         workbook.close()
 
 
+def _header_text(value: Any, row: int, column: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SyncError(f"Cabeçalho vazio ou inválido na linha {row}, coluna {column}.")
+    return value.strip()
+
+
+def _display_value(value: CellValue) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
+def _json_value(value: CellValue) -> str | int | float | bool:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+def print_dry_run(plan: WorkbookPlan, organization: str, project: str) -> None:
+    print("Dry-run concluído: nenhuma chamada ao Azure DevOps foi feita.")
+    print(f"Destino: {organization}/{project}")
+    print(
+        f"Itens únicos: {len(plan.projects)} Project(s), "
+        f"{len(plan.positions)} Position(s)."
+    )
+    for record in (*plan.projects, *plan.positions):
+        print(
+            f"- {record.item_type} por {record.natural_key_name}="
+            f"{_display_value(record.natural_key_value)!r}: "
+            f"{len(record.fields)} campo(s)"
+        )
+    print(
+        "Relações planejadas: Project pai de Position "
+        f"({PARENT_RELATION_TYPE}), uma por linha de dados."
+    )
+    print(
+        "Na execução real, nomes/referenceNames, tipos graváveis e identidades "
+        "duplicadas serão validados pela API antes da primeira escrita."
+    )
+
+
 class AzureDevOpsClient:
-    def __init__(self, organization: str, project: str, pat: str) -> None:
+    def __init__(
+        self,
+        organization: str,
+        project: str,
+        pat: str,
+        field_overrides: dict[str, str] | None = None,
+    ) -> None:
         if not pat:
             raise SyncError(
                 "A variável de ambiente ADO_PAT é obrigatória. "
                 "Configure-a somente como secret do GitHub Actions."
             )
-
+        self.organization = organization
+        self.project = project
         self.base_url = (
             f"https://dev.azure.com/{quote(organization, safe='')}/"
             f"{quote(project, safe='')}/_apis/wit"
@@ -205,8 +300,20 @@ class AzureDevOpsClient:
         self.session = requests.Session()
         self.session.auth = HTTPBasicAuth("", pat)
         self.session.headers.update({"Accept": "application/json"})
+        self.field_overrides = field_overrides or {}
 
-    def _response_json(self, response: requests.Response, action: str) -> dict[str, Any]:
+    def _request_json(
+        self, method: str, url: str, action: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        try:
+            response = self.session.request(
+                method,
+                url,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                **kwargs,
+            )
+        except requests.RequestException as exc:
+            raise SyncError(f"Falha ao {action}: {exc}") from exc
         if not response.ok:
             message = response.text.strip().replace("\n", " ")[:500]
             raise SyncError(
@@ -220,133 +327,367 @@ class AzureDevOpsClient:
             raise SyncError(f"Resposta inesperada do Azure DevOps ao {action}.")
         return payload
 
-    def resolve_skills_reference_name(self, override: str | None) -> str:
+    def get_field_definitions(self, item_type: str) -> list[FieldDefinition]:
+        payload = self._request_json(
+            "GET",
+            f"{self.base_url}/workitemtypes/{quote(item_type, safe='')}/fields",
+            f"consultar os campos de {item_type}",
+            params={"api-version": API_VERSION},
+        )
+        values = payload.get("value")
+        if not isinstance(values, list):
+            raise SyncError(
+                f"A resposta de campos de {item_type} não contém a lista 'value'."
+            )
+        definitions: list[FieldDefinition] = []
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            name = value.get("name")
+            reference_name = value.get("referenceName")
+            if isinstance(name, str) and isinstance(reference_name, str):
+                definitions.append(
+                    FieldDefinition(
+                        name=name,
+                        reference_name=reference_name,
+                        field_type=str(value.get("type", "")),
+                        read_only=bool(value.get("readOnly", False)),
+                    )
+                )
+        if not definitions:
+            raise SyncError(f"A API não retornou campos válidos para {item_type}.")
+        return definitions
+
+    def resolve_record(
+        self, record: ItemRecord, definitions: list[FieldDefinition]
+    ) -> ResolvedRecord:
+        resolved: dict[str, CellValue] = {}
+        source_to_reference: dict[str, str] = {}
+        for display_name, value in record.fields.items():
+            definition = self._resolve_field(
+                record.item_type, display_name, definitions
+            )
+            if definition.read_only:
+                raise SyncError(
+                    f"O campo {display_name!r} ({definition.reference_name}) de "
+                    f"{record.item_type} é somente leitura."
+                )
+            if definition.reference_name in resolved:
+                raise SyncError(
+                    f"Mais de uma coluna de {record.item_type} resolve para "
+                    f"{definition.reference_name}."
+                )
+            resolved[definition.reference_name] = value
+            source_to_reference[display_name] = definition.reference_name
+
+        if "System.Title" not in resolved:
+            title_source = TITLE_SOURCE_FIELDS[record.item_type]
+            title = record.fields.get(title_source)
+            if title is None:
+                raise SyncError(
+                    f"{record.item_type} precisa de {title_source!r} para preencher "
+                    "System.Title."
+                )
+            resolved["System.Title"] = title
+
+        return ResolvedRecord(
+            source=record,
+            fields=resolved,
+            natural_key_reference_name=source_to_reference[record.natural_key_name],
+        )
+
+    def _resolve_field(
+        self,
+        item_type: str,
+        display_name: str,
+        definitions: list[FieldDefinition],
+    ) -> FieldDefinition:
+        override_key = f"{item_type}.{display_name}"
+        override = self.field_overrides.get(override_key)
         if override:
-            return override.strip()
-
-        try:
-            response = self.session.get(
-                f"{self.base_url}/fields",
-                params={"api-version": API_VERSION},
-                timeout=REQUEST_TIMEOUT_SECONDS,
+            matches = [
+                definition
+                for definition in definitions
+                if definition.reference_name.casefold() == override.casefold()
+            ]
+        else:
+            matches = [
+                definition
+                for definition in definitions
+                if definition.name.casefold() == display_name.casefold()
+                or definition.reference_name.casefold() == display_name.casefold()
+            ]
+        unique = {definition.reference_name: definition for definition in matches}
+        if len(unique) != 1:
+            if not unique:
+                detail = "não foi encontrado"
+            else:
+                detail = "é ambíguo: " + ", ".join(sorted(unique))
+            raise SyncError(
+                f"O campo {display_name!r} de {item_type} {detail}. "
+                "Corrija o processo no Azure DevOps ou configure "
+                "AZURE_FIELD_REFERENCE_OVERRIDES."
             )
-        except requests.RequestException as exc:
-            raise SyncError(f"Falha ao consultar os campos do Azure DevOps: {exc}") from exc
+        return next(iter(unique.values()))
 
-        payload = self._response_json(response, "consultar os campos")
-        fields = payload.get("value")
-        if not isinstance(fields, list):
-            raise SyncError("A resposta de campos do Azure DevOps não contém a lista 'value'.")
-
-        matches = [
-            field.get("referenceName")
-            for field in fields
-            if isinstance(field, dict)
-            and str(field.get("name", "")).casefold() == "skills".casefold()
-            and isinstance(field.get("referenceName"), str)
-            and field["referenceName"].strip()
+    def find_existing(self, record: ResolvedRecord) -> ExistingWorkItem | None:
+        reference_name = record.natural_key_reference_name
+        value = record.source.natural_key_value
+        wiql = (
+            "SELECT [System.Id] FROM WorkItems "
+            f"WHERE [System.TeamProject] = '{_wiql_escape(self.project)}' "
+            f"AND [System.WorkItemType] = '{_wiql_escape(record.source.item_type)}' "
+            f"AND [{reference_name.replace(']', ']]')}] = {_wiql_literal(value)}"
+        )
+        payload = self._request_json(
+            "POST",
+            f"{self.base_url}/wiql",
+            f"localizar {record.source.item_type} por {record.source.natural_key_name}",
+            params={"api-version": API_VERSION},
+            json={"query": wiql},
+        )
+        work_items = payload.get("workItems")
+        if not isinstance(work_items, list):
+            raise SyncError("A consulta WIQL não retornou a lista 'workItems'.")
+        ids = [
+            item.get("id")
+            for item in work_items
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
         ]
-        unique_matches = sorted(set(matches))
-        if len(unique_matches) != 1:
+        if len(ids) > 1:
             raise SyncError(
-                "Não foi possível identificar unicamente o referenceName do campo exibido "
-                "como 'Skills'. Defina AZURE_SKILLS_FIELD_REFERENCE_NAME."
+                f"Foram encontrados {len(ids)} itens {record.source.item_type} com "
+                f"{record.source.natural_key_name}="
+                f"{record.source.natural_key_value!r}; corrija a duplicidade."
             )
-        return unique_matches[0]
+        return self.get_work_item(ids[0]) if ids else None
 
-    def resolve_work_item_state(self, work_item_id: int, requested_state: str) -> str:
-        try:
-            work_item_response = self.session.get(
-                f"{self.base_url}/workitems/{work_item_id}",
-                params={
-                    "fields": "System.WorkItemType",
-                    "api-version": API_VERSION,
-                },
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-        except requests.RequestException as exc:
-            raise SyncError(
-                f"Falha ao consultar o tipo do work item {work_item_id}: {exc}"
-            ) from exc
-
-        work_item = self._response_json(
-            work_item_response, f"consultar o work item {work_item_id}"
+    def get_work_item(self, work_item_id: int) -> ExistingWorkItem:
+        payload = self._request_json(
+            "GET",
+            f"{self.base_url}/workitems/{work_item_id}",
+            f"consultar o work item {work_item_id}",
+            params={"$expand": "Relations", "api-version": API_VERSION},
         )
-        fields = work_item.get("fields")
-        work_item_type = (
-            fields.get("System.WorkItemType")
-            if isinstance(fields, dict)
-            else None
+        fields = payload.get("fields")
+        relations = payload.get("relations", [])
+        if not isinstance(fields, dict) or not isinstance(relations, list):
+            raise SyncError(f"Resposta inválida ao consultar o work item {work_item_id}.")
+        return ExistingWorkItem(
+            work_item_id=work_item_id,
+            fields=fields,
+            relations=tuple(item for item in relations if isinstance(item, dict)),
         )
-        if not isinstance(work_item_type, str) or not work_item_type.strip():
-            raise SyncError(
-                f"O work item {work_item_id} não informou System.WorkItemType."
-            )
 
-        try:
-            states_response = self.session.get(
-                f"{self.base_url}/workitemtypes/"
-                f"{quote(work_item_type.strip(), safe='')}/states",
-                params={"api-version": API_VERSION},
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-        except requests.RequestException as exc:
-            raise SyncError(
-                f"Falha ao consultar os estados do tipo {work_item_type!r}: {exc}"
-            ) from exc
-
-        states_payload = self._response_json(
-            states_response, f"consultar os estados do tipo {work_item_type!r}"
+    def create_work_item(self, record: ResolvedRecord) -> int:
+        patch = _field_patch(record.fields)
+        payload = self._request_json(
+            "POST",
+            f"{self.base_url}/workitems/${quote(record.source.item_type, safe='')}",
+            f"criar {record.source.item_type}",
+            params={"api-version": API_VERSION},
+            headers={"Content-Type": "application/json-patch+json"},
+            json=patch,
         )
-        states = states_payload.get("value")
-        if not isinstance(states, list):
+        work_item_id = payload.get("id")
+        if not isinstance(work_item_id, int):
             raise SyncError(
-                "A resposta de estados do Azure DevOps não contém a lista 'value'."
+                f"A API não retornou o ID do {record.source.item_type} criado."
             )
-        return resolve_state_name(requested_state, states)
+        return work_item_id
 
     def update_work_item(
-        self,
-        work_item_id: int,
-        vacancy: Vacancy,
-        skills_reference_name: str,
-        resolved_state: str,
-    ) -> None:
-        fields = (
-            ("System.Description", vacancy.description),
-            ("System.State", resolved_state),
-            (skills_reference_name, vacancy.skills),
+        self, existing: ExistingWorkItem, record: ResolvedRecord
+    ) -> bool:
+        changed = {
+            reference_name: value
+            for reference_name, value in record.fields.items()
+            if not _values_equal(existing.fields.get(reference_name), value)
+        }
+        if not changed:
+            return False
+        self._request_json(
+            "PATCH",
+            f"{self.base_url}/workitems/{existing.work_item_id}",
+            f"atualizar o work item {existing.work_item_id}",
+            params={"api-version": API_VERSION},
+            headers={"Content-Type": "application/json-patch+json"},
+            json=_field_patch(changed),
+        )
+        return True
+
+    def ensure_parent_relation(
+        self, child_id: int, parent_id: int, child_relations: tuple[dict[str, Any], ...]
+    ) -> bool:
+        expected_suffix = f"/workitems/{parent_id}".casefold()
+        hierarchy_parents = [
+            relation
+            for relation in child_relations
+            if str(relation.get("rel", "")).casefold()
+            == PARENT_RELATION_TYPE.casefold()
+        ]
+        if any(
+            str(relation.get("url", "")).casefold().endswith(expected_suffix)
+            for relation in hierarchy_parents
+        ):
+            return False
+        if hierarchy_parents:
+            current_urls = ", ".join(str(item.get("url", "")) for item in hierarchy_parents)
+            raise SyncError(
+                f"A Position {child_id} já possui outro pai hierárquico: {current_urls}."
+            )
+        parent_url = (
+            f"https://dev.azure.com/{quote(self.organization, safe='')}/"
+            f"{quote(self.project, safe='')}/_apis/wit/workItems/{parent_id}"
         )
         patch = [
             {
                 "op": "add",
-                "path": f"/fields/{_escape_json_pointer(reference_name)}",
-                "value": value,
+                "path": "/relations/-",
+                "value": {
+                    "rel": PARENT_RELATION_TYPE,
+                    "url": parent_url,
+                    "attributes": {"comment": "Relação criada pela sincronização de vagas"},
+                },
             }
-            for reference_name, value in fields
         ]
+        self._request_json(
+            "PATCH",
+            f"{self.base_url}/workitems/{child_id}",
+            f"relacionar Project {parent_id} como pai de Position {child_id}",
+            params={"api-version": API_VERSION},
+            headers={"Content-Type": "application/json-patch+json"},
+            json=patch,
+        )
+        return True
 
-        try:
-            response = self.session.patch(
-                f"{self.base_url}/workitems/{work_item_id}",
-                params={"api-version": API_VERSION},
-                headers={"Content-Type": "application/json-patch+json"},
-                json=patch,
-                timeout=REQUEST_TIMEOUT_SECONDS,
+
+def synchronize(client: AzureDevOpsClient, plan: WorkbookPlan) -> None:
+    definitions = {
+        item_type: client.get_field_definitions(item_type)
+        for item_type in SUPPORTED_ITEM_TYPES
+    }
+    resolved_projects = [
+        client.resolve_record(record, definitions[PARENT_ITEM_TYPE])
+        for record in plan.projects
+    ]
+    resolved_positions = [
+        client.resolve_record(record, definitions[CHILD_ITEM_TYPE])
+        for record in plan.positions
+    ]
+
+    all_resolved = (*resolved_projects, *resolved_positions)
+    existing_by_key = {
+        _record_key(record.source): client.find_existing(record)
+        for record in all_resolved
+    }
+
+    ids_by_key: dict[tuple[str, str], int] = {}
+    relation_snapshots: dict[int, tuple[dict[str, Any], ...]] = {}
+    for record in all_resolved:
+        key = _record_key(record.source)
+        existing = existing_by_key[key]
+        if existing is None:
+            work_item_id = client.create_work_item(record)
+            ids_by_key[key] = work_item_id
+            relation_snapshots[work_item_id] = ()
+            print(
+                f"Criado {record.source.item_type} {work_item_id} "
+                f"({record.source.natural_key_name}="
+                f"{record.source.natural_key_value!r})."
             )
-        except requests.RequestException as exc:
-            raise SyncError(f"Falha ao atualizar o work item {work_item_id}: {exc}") from exc
+        else:
+            changed = client.update_work_item(existing, record)
+            ids_by_key[key] = existing.work_item_id
+            relation_snapshots[existing.work_item_id] = existing.relations
+            action = "Atualizado" if changed else "Sem alterações"
+            print(
+                f"{action}: {record.source.item_type} {existing.work_item_id} "
+                f"({record.source.natural_key_name}="
+                f"{record.source.natural_key_value!r})."
+            )
 
-        self._response_json(response, f"atualizar o work item {work_item_id}")
+    seen_relations: set[tuple[int, int]] = set()
+    for pair in plan.pairs:
+        parent_id = ids_by_key[_record_key(pair.project)]
+        child_id = ids_by_key[_record_key(pair.position)]
+        relation_key = (parent_id, child_id)
+        if relation_key in seen_relations:
+            continue
+        seen_relations.add(relation_key)
+        created = client.ensure_parent_relation(
+            child_id, parent_id, relation_snapshots.get(child_id, ())
+        )
+        if created:
+            print(f"Relação criada: Project {parent_id} -> Position {child_id}.")
+        else:
+            print(f"Relação já existente: Project {parent_id} -> Position {child_id}.")
+
+
+def _record_key(record: ItemRecord) -> tuple[str, str]:
+    return record.item_type, str(record.natural_key_value)
+
+
+def _field_patch(fields: dict[str, CellValue]) -> list[dict[str, Any]]:
+    return [
+        {
+            "op": "add",
+            "path": f"/fields/{_escape_json_pointer(reference_name)}",
+            "value": _json_value(value),
+        }
+        for reference_name, value in fields.items()
+    ]
 
 
 def _escape_json_pointer(value: str) -> str:
     return value.replace("~", "~0").replace("/", "~1")
 
 
+def _wiql_escape(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _wiql_literal(value: CellValue) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return f"'{_wiql_escape(_display_value(value))}'"
+
+
+def _values_equal(current: Any, desired: CellValue) -> bool:
+    desired_json = _json_value(desired)
+    if current == desired_json:
+        return True
+    if isinstance(desired, (date, datetime)) and isinstance(current, str):
+        return current[:10] == desired.isoformat()[:10]
+    if isinstance(desired_json, (int, float)) and isinstance(current, (int, float)):
+        return float(current) == float(desired_json)
+    return str(current).strip() == str(desired_json).strip()
+
+
+def parse_field_overrides(raw_value: str) -> dict[str, str]:
+    if not raw_value.strip():
+        return {}
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise SyncError(
+            "AZURE_FIELD_REFERENCE_OVERRIDES deve ser um objeto JSON válido."
+        ) from exc
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(reference, str) and reference.strip()
+        for key, reference in value.items()
+    ):
+        raise SyncError(
+            "AZURE_FIELD_REFERENCE_OVERRIDES deve mapear nomes para referenceNames."
+        )
+    return {key: reference.strip() for key, reference in value.items()}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sincroniza automacao_azure_devops/vagas.xlsx com um work item."
+        description="Sincroniza Projects e Positions de vagas.xlsx com Azure DevOps."
     )
     parser.add_argument(
         "--workbook",
@@ -356,11 +697,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--organization", default=DEFAULT_ORGANIZATION)
     parser.add_argument("--project", default=DEFAULT_PROJECT)
-    parser.add_argument("--work-item-id", type=int, default=DEFAULT_WORK_ITEM_ID)
+    parser.add_argument(
+        "--work-item-id",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Valida e exibe um resumo sem acessar ou alterar o Azure DevOps.",
+        help="Valida e exibe o plano sem acessar ou alterar o Azure DevOps.",
     )
     return parser.parse_args()
 
@@ -368,36 +713,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        vacancy = read_vacancy(args.workbook)
-        skills_override = os.getenv("AZURE_SKILLS_FIELD_REFERENCE_NAME", "").strip() or None
-
+        plan = read_workbook_plan(args.workbook)
         if args.dry_run:
-            print("Dry-run concluído: planilha válida; nenhuma chamada ao Azure DevOps foi feita.")
-            print(f"Work item: {args.organization}/{args.project}#{args.work_item_id}")
-            print("Campos validados: System.Description, System.State e Skills")
-            if skills_override:
-                print(f"ReferenceName de Skills configurado: {skills_override}")
+            print_dry_run(plan, args.organization, args.project)
             return 0
 
+        overrides = parse_field_overrides(
+            os.getenv("AZURE_FIELD_REFERENCE_OVERRIDES", "")
+        )
         client = AzureDevOpsClient(
             organization=args.organization,
             project=args.project,
             pat=os.getenv("ADO_PAT", ""),
+            field_overrides=overrides,
         )
-        resolved_state = client.resolve_work_item_state(
-            args.work_item_id, vacancy.state
-        )
-        skills_reference_name = client.resolve_skills_reference_name(skills_override)
-        client.update_work_item(
-            work_item_id=args.work_item_id,
-            vacancy=vacancy,
-            skills_reference_name=skills_reference_name,
-            resolved_state=resolved_state,
-        )
-        print(
-            f"Work item {args.work_item_id} atualizado com sucesso "
-            f"(estado: {resolved_state}; campo Skills: {skills_reference_name})."
-        )
+        synchronize(client, plan)
+        print("Sincronização concluída com sucesso.")
         return 0
     except SyncError as exc:
         print(f"Erro: {exc}", file=sys.stderr)
