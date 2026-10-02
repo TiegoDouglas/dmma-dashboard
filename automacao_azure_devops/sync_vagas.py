@@ -32,6 +32,15 @@ TITLE_SOURCE_FIELDS = {
     "Project": "PROJETO",
     "Position": "RoleTitle",
 }
+DEFAULT_FIELD_REFERENCE_NAMES = {
+    "Project.OppID": "Custom.OppID_",
+    "Project.Account.": "Custom.Account",
+    "Project.PROJETO": "System.Title",
+    "Project.Win Probability": "Custom.WinProb",
+    "Project.Estimated Project Start Date": "Microsoft.VSTS.Scheduling.StartDate",
+    "Project.Estimated Project End Date": "Microsoft.VSTS.Scheduling.FinishDate",
+    "Position.RoleTitle": "System.Title",
+}
 PARENT_ITEM_TYPE = "Project"
 CHILD_ITEM_TYPE = "Position"
 PARENT_RELATION_TYPE = "System.LinkTypes.Hierarchy-Reverse"
@@ -229,6 +238,7 @@ def read_workbook_plan(workbook_path: Path) -> WorkbookPlan:
         plan = WorkbookPlan(tuple(pairs))
         plan.projects
         plan.positions
+        _validate_pair_relations(plan)
         return plan
     finally:
         workbook.close()
@@ -238,6 +248,25 @@ def _header_text(value: Any, row: int, column: int) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SyncError(f"Cabeçalho vazio ou inválido na linha {row}, coluna {column}.")
     return value.strip()
+
+
+def _validate_pair_relations(plan: WorkbookPlan) -> None:
+    project_by_position: dict[tuple[str, str], tuple[str, str]] = {}
+    source_row_by_position: dict[tuple[str, str], int] = {}
+    for pair in plan.pairs:
+        position_key = _record_key(pair.position)
+        project_key = _record_key(pair.project)
+        previous_project = project_by_position.get(position_key)
+        if previous_project is not None and previous_project != project_key:
+            raise SyncError(
+                f"As linhas {source_row_by_position[position_key]} e "
+                f"{pair.position.source_row} associam a mesma Position "
+                f"{pair.position.natural_key_name}="
+                f"{pair.position.natural_key_value!r} a Projects diferentes "
+                f"({previous_project[1]!r} e {project_key[1]!r})."
+            )
+        project_by_position[position_key] = project_key
+        source_row_by_position[position_key] = pair.position.source_row
 
 
 def _display_value(value: CellValue) -> str:
@@ -364,20 +393,27 @@ class AzureDevOpsClient:
     ) -> ResolvedRecord:
         resolved: dict[str, CellValue] = {}
         source_to_reference: dict[str, str] = {}
+        errors: list[str] = []
         for display_name, value in record.fields.items():
-            definition = self._resolve_field(
-                record.item_type, display_name, definitions
-            )
+            try:
+                definition = self._resolve_field(
+                    record.item_type, display_name, definitions
+                )
+            except SyncError as exc:
+                errors.append(str(exc))
+                continue
             if definition.read_only:
-                raise SyncError(
+                errors.append(
                     f"O campo {display_name!r} ({definition.reference_name}) de "
                     f"{record.item_type} é somente leitura."
                 )
+                continue
             if definition.reference_name in resolved:
-                raise SyncError(
+                errors.append(
                     f"Mais de uma coluna de {record.item_type} resolve para "
                     f"{definition.reference_name}."
                 )
+                continue
             resolved[definition.reference_name] = value
             source_to_reference[display_name] = definition.reference_name
 
@@ -385,11 +421,22 @@ class AzureDevOpsClient:
             title_source = TITLE_SOURCE_FIELDS[record.item_type]
             title = record.fields.get(title_source)
             if title is None:
-                raise SyncError(
+                errors.append(
                     f"{record.item_type} precisa de {title_source!r} para preencher "
                     "System.Title."
                 )
-            resolved["System.Title"] = title
+            elif title_source in source_to_reference:
+                resolved["System.Title"] = title
+
+        if errors:
+            raise SyncError(
+                f"Falha ao validar os campos de {record.item_type} na linha "
+                f"{record.source_row}:\n- "
+                + "\n- ".join(errors)
+                + "\nCampos graváveis disponíveis para "
+                f"{record.item_type}: "
+                f"{_format_field_definitions(_writable_fields(definitions))}."
+            )
 
         return ResolvedRecord(
             source=record,
@@ -405,22 +452,37 @@ class AzureDevOpsClient:
     ) -> FieldDefinition:
         override_key = f"{item_type}.{display_name}"
         override = self.field_overrides.get(override_key)
+        default_reference = DEFAULT_FIELD_REFERENCE_NAMES.get(override_key)
         if override:
-            override_canonical = _canonical_field_name(override)
+            configured_reference = override
+            configured_canonical = _canonical_field_name(configured_reference)
             matches = [
                 definition
                 for definition in definitions
-                if definition.reference_name.casefold() == override.casefold()
+                if definition.reference_name.casefold()
+                == configured_reference.casefold()
                 or _canonical_field_name(definition.reference_name)
-                == override_canonical
+                == configured_canonical
             ]
         else:
-            display_canonical = _canonical_field_name(display_name)
-            matches = [
-                definition
-                for definition in definitions
-                if display_canonical in _field_aliases(definition)
-            ]
+            matches = []
+            if default_reference:
+                default_canonical = _canonical_field_name(default_reference)
+                matches = [
+                    definition
+                    for definition in definitions
+                    if definition.reference_name.casefold()
+                    == default_reference.casefold()
+                    or _canonical_field_name(definition.reference_name)
+                    == default_canonical
+                ]
+            if not matches:
+                display_canonical = _canonical_field_name(display_name)
+                matches = [
+                    definition
+                    for definition in definitions
+                    if display_canonical in _field_aliases(definition)
+                ]
         unique = {definition.reference_name: definition for definition in matches}
         if len(unique) != 1:
             candidates = (
@@ -436,8 +498,6 @@ class AzureDevOpsClient:
             raise SyncError(
                 f"O campo {display_name!r} de {item_type} {detail}. "
                 f"Candidatos próximos: {_format_field_definitions(candidates)}. "
-                "Campos graváveis disponíveis: "
-                f"{_format_field_definitions(_writable_fields(definitions))}. "
                 "Corrija o processo no Azure DevOps ou configure "
                 "AZURE_FIELD_REFERENCE_OVERRIDES."
             )
@@ -580,14 +640,24 @@ def synchronize(client: AzureDevOpsClient, plan: WorkbookPlan) -> None:
         item_type: client.get_field_definitions(item_type)
         for item_type in SUPPORTED_ITEM_TYPES
     }
-    resolved_projects = [
-        client.resolve_record(record, definitions[PARENT_ITEM_TYPE])
-        for record in plan.projects
-    ]
-    resolved_positions = [
-        client.resolve_record(record, definitions[CHILD_ITEM_TYPE])
-        for record in plan.positions
-    ]
+    resolved_projects: list[ResolvedRecord] = []
+    resolved_positions: list[ResolvedRecord] = []
+    validation_errors: list[str] = []
+    for record, destination in (
+        *((record, resolved_projects) for record in plan.projects),
+        *((record, resolved_positions) for record in plan.positions),
+    ):
+        try:
+            destination.append(
+                client.resolve_record(record, definitions[record.item_type])
+            )
+        except SyncError as exc:
+            validation_errors.append(str(exc))
+    if validation_errors:
+        raise SyncError(
+            "O preflight encontrou campos inválidos; nenhuma busca ou escrita foi "
+            "executada:\n\n" + "\n\n".join(validation_errors)
+        )
 
     all_resolved = (*resolved_projects, *resolved_positions)
     existing_by_key = {
